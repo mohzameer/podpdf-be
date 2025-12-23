@@ -11,16 +11,7 @@
 - Updated request body examples to include `input_type`
 - Added comprehensive error responses for validation failures
 
-### 2. WAF Title Confusion ✅ RESOLVED
-**Location:** Line 321 - "Per-IP Protection (WAF - Free Tier Only)"
-**Issue:** Title says "Free Tier Only" but description (line 398) says "applies to all users"
-**Fix Applied:** 
-- Clarified that "Free Tier" refers to AWS WAF pricing tier (not user pricing tier)
-- Updated all WAF references to specify "AWS Free Tier Features" 
-- Made explicit that WAF applies to all users (both free tier and paid tier users)
-- Updated title to: "Per-IP Protection (WAF - AWS Free Tier Features)"
-
-### 3. Pricing Model Ambiguity ✅ RESOLVED
+### 2. Pricing Model Ambiguity ✅ RESOLVED
 **Location:** Lines 356, 364, 371
 **Issue:** Unclear if free tier users can:
 - Continue using service after 100 PDFs by paying $0.005 per PDF, OR
@@ -39,7 +30,7 @@
 **Fix Applied:**
 - Clarified that paid plan users have unlimited PDFs (no quota limit)
 - They pay $0.005 per PDF, invoiced monthly
-- Rate limits are unlimited for paid plan users (only limited by WAF and API Gateway)
+- Rate limits are unlimited for paid plan users (only limited by API Gateway)
 
 ### 5. Request Validation Missing ✅ RESOLVED
 **Location:** Request Body section (line 213-233)
@@ -58,13 +49,12 @@
 **Location:** Line 259 - "403 | Forbidden - Rate limit exceeded or quota exhausted"
 **Issue:** Doesn't distinguish between:
 - Free tier per-user rate limit (20/min)
-- WAF IP rate limit (2000/5min)
 - Quota exhaustion (100 PDFs)
 **Fix Applied:**
 - Added specific error codes: `RATE_LIMIT_EXCEEDED` (per-user rate limit) and `QUOTA_EXCEEDED` (PDF quota)
-- Clarified that WAF IP rate limits return 429 (from API Gateway/WAF), not 403
+- Clarified that API Gateway throttling returns 429 (from API Gateway), not 403
 - Updated 403 error description to distinguish between rate limit and quota exhaustion
-- Added note explaining which error codes come from Lambda (403) vs API Gateway/WAF (429)
+- Added note explaining which error codes come from Lambda (403) vs API Gateway (429)
 - Error codes now clearly distinguish between different rate limit types
 
 ## Minor Issues
@@ -160,5 +150,5 @@ Create a comprehensive table of all error codes with:
 - Created `ERRORS.md` as a dedicated error reference document
 - Documented all error codes (validation, auth/account, rate limiting, throttling, server errors)
 - Added a summary table with code, HTTP status, category, and description
-- Clarified which errors are returned by Lambda vs API Gateway/WAF
+- Clarified which errors are returned by Lambda vs API Gateway
 

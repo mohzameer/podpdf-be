@@ -1,0 +1,45 @@
+{
+  "name": "podpdf-be",
+  "version": "1.0.0",
+  "description": "PodPDF Backend - Serverless PDF generation service",
+  "main": "src/handler.js",
+  "scripts": {
+    "deploy:dev": "serverless deploy --stage dev",
+    "deploy:prod": "serverless deploy --stage prod",
+    "deploy:dev:profile": "AWS_PROFILE=podpdf-dev serverless deploy --stage dev",
+    "deploy:prod:profile": "AWS_PROFILE=podpdf-prod serverless deploy --stage prod",
+    "remove:dev": "serverless remove --stage dev",
+    "remove:prod": "serverless remove --stage prod",
+    "info:dev": "serverless info --stage dev",
+    "info:prod": "serverless info --stage prod",
+    "logs:dev": "serverless logs --function generate --stage dev --tail",
+    "logs:prod": "serverless logs --function generate --stage prod --tail"
+  },
+  "keywords": [
+    "pdf",
+    "serverless",
+    "aws",
+    "lambda"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@sparticuz/chromium": "^119.0.2",
+    "puppeteer-core": "^21.5.2",
+    "marked": "^11.1.1",
+    "@aws-sdk/client-dynamodb": "^3.490.0",
+    "@aws-sdk/lib-dynamodb": "^3.490.0",
+    "@aws-sdk/client-cognito-identity-provider": "^3.490.0",
+    "@aws-sdk/client-s3": "^3.490.0",
+    "@aws-sdk/s3-request-presigner": "^3.490.0",
+    "@aws-sdk/client-sqs": "^3.490.0",
+    "jsonwebtoken": "^9.0.2",
+    "jwks-rsa": "^3.1.0",
+    "ulid": "^2.3.0",
+    "uuid": "^9.0.1"
+  },
+  "devDependencies": {
+    "serverless": "^3.38.0"
+  }
+}
+

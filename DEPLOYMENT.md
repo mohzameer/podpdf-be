@@ -27,11 +27,12 @@
    node --version  # Should be v20.x or higher
    ```
 
-2. **Serverless Framework 3.x+**
+2. **Serverless Framework 3.x** (latest 3.x version)
    ```bash
-   npm install -g serverless@latest
-   serverless --version  # Should be 3.x or higher
+   npm install -g serverless@^3
+   serverless --version  # Should be 3.x.x (not 4.x)
    ```
+   **Note:** This project requires Serverless Framework 3.x. Installing `serverless@latest` may install version 4.x which is not compatible. Use `serverless@^3` to ensure you get the latest 3.x version.
 
 3. **AWS CLI**
    ```bash
@@ -52,7 +53,6 @@ The deployment requires permissions for:
 - Cognito (create, update user pools and app clients)
 - IAM (create roles and policies)
 - CloudWatch (create log groups)
-- WAF (AWS free tier features only - basic rate-based rules, applies to all users)
 
 ---
 
@@ -107,7 +107,6 @@ Development stack uses the following naming convention:
 - Lambda function: `podpdf-dev-generate`
 - DynamoDB tables: `podpdf-dev-users`, `podpdf-dev-user-rate-limits`, `podpdf-dev-job-details`, `podpdf-dev-analytics`
 - Cognito User Pool: `podpdf-dev-user-pool`
-- WAF: Basic rate-based rule (AWS free tier features only, applies to all users)
 
 ### Environment Variables
 
@@ -149,7 +148,6 @@ environment:
 
 - **Lower Throttling:** 100 requests/second (vs 1000 in prod)
 - **Extended Logging:** Debug-level CloudWatch logs
-- **WAF:** Basic rate-based rule (AWS free tier features only, applies to all users, optional in dev)
 - **Per-User Rate Limiting:** 20 requests/minute (free tier only; paid tier unlimited)
 - **Cost Alerts:** Lower thresholds ($5, $10)
 - **Test User Pool:** Separate Cognito pool for development
@@ -174,7 +172,6 @@ Production stack uses the following naming convention:
 - Lambda function: `podpdf-prod-generate`
 - DynamoDB tables: `podpdf-prod-users`, `podpdf-prod-user-rate-limits`, `podpdf-prod-job-details`, `podpdf-prod-analytics`
 - Cognito User Pool: `podpdf-prod-user-pool`
-- WAF: Basic rate-based rule (AWS free tier features only, applies to all users)
 
 ### Environment Variables
 
@@ -198,7 +195,6 @@ Before deploying to production:
 - [ ] Development stack tested and verified
 - [ ] Environment variables reviewed
 - [ ] AWS Budget alerts configured
-- [ ] WAF configured (AWS free tier features only - basic rate-based rules, applies to all users)
 - [ ] Cognito user pool configured
 - [ ] DynamoDB backup strategy in place
 - [ ] CloudWatch alarms configured
@@ -238,8 +234,7 @@ Before deploying to production:
 ### Production Stack Features
 
 - **High Throttling:** 1000 requests/second with 2000 burst
-- **WAF Enabled:** Basic rate-based rule (AWS free tier features only, no additional cost, applies to all users)
-- **Per-User Rate Limiting:** 20 requests/minute (free tier only; paid tier unlimited, only limited by WAF and API Gateway)
+- **Per-User Rate Limiting:** 20 requests/minute (free tier only; paid tier unlimited, only limited by API Gateway)
 - **Optimized Logging:** Info-level logs (reduced verbosity)
 - **Cost Alerts:** Production thresholds ($10, $50, $100)
 - **Enhanced Monitoring:** Custom CloudWatch metrics and alarms
@@ -291,7 +286,7 @@ functions:
     handler: src/handler.generate
     # ... function configuration
 
-resources: ${file(resources.yml)}  # All AWS resources (DynamoDB tables, Cognito, WAF, etc.)
+resources: ${file(resources.yml)}  # All AWS resources (DynamoDB tables, Cognito, etc.)
 ```
 
 ### Environment-Specific Files

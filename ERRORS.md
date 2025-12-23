@@ -68,13 +68,13 @@ This document lists all error codes returned by the PodPDF API, their HTTP statu
 
 ### 4. Throttling Errors (Upstream)
 
-#### `TooManyRequests` (API Gateway / WAF)
+#### `TooManyRequests` (API Gateway)
 - **HTTP Status:** 429
 - **When:**
   - Global API Gateway throttling is hit (1000 requests/second, 2000 burst), or
-  - WAF IP rate limit is hit (>2000 requests/5 minutes per IP).
+  - API Gateway throttling limit is reached.
 - **Notes:**
-  - Returned by API Gateway/WAF before the request reaches Lambda.
+  - Returned by API Gateway before the request reaches Lambda.
   - Error body is controlled by AWS, not PodPDF.
 
 ---
@@ -104,7 +104,7 @@ This document lists all error codes returned by the PodPDF API, their HTTP statu
 | `ACCOUNT_NOT_FOUND`    | 403        | Account                     | User account not found                                       |
 | `RATE_LIMIT_EXCEEDED`  | 403        | Rate limiting (per-user)    | Free tier per-user rate limit exceeded                       |
 | `QUOTA_EXCEEDED`       | 403        | Quota                       | Free tier PDF quota exhausted                                |
-| `TooManyRequests`      | 429        | Throttling (API Gateway/WAF)| Global or IP-based throttling triggered                      |
+| `TooManyRequests`      | 429        | Throttling (API Gateway)     | Global throttling triggered                                  |
 | `INTERNAL_SERVER_ERROR`| 500        | Server                      | Unexpected server-side error                                 |
 
 

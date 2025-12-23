@@ -32,7 +32,6 @@
   - Lambda function: `podpdf-dev-generate`
   - API Gateway: `podpdf-dev-api`
   - Cognito User Pool: `podpdf-dev-user-pool`
-  - WAF: Basic rate-based rule
 - **Configuration:**
   - Lower throttling: 100 req/sec (vs 1000 in prod)
   - Debug-level logging
@@ -52,7 +51,6 @@
   - Lambda function: `podpdf-prod-generate`
   - API Gateway: `podpdf-prod-api`
   - Cognito User Pool: `podpdf-prod-user-pool`
-  - WAF: Basic rate-based rule
 - **Configuration:**
   - Higher throttling: 1000 req/sec with 2000 burst
   - Info-level logging (optimized)
@@ -125,11 +123,12 @@ serverless remove --stage prod
   ```bash
   npm init -y
   ```
-- [ ] Install Serverless Framework globally
+- [ ] Install Serverless Framework globally (latest 3.x version)
   ```bash
-  npm install -g serverless@latest
-  serverless --version  # Verify 3.x+
+  npm install -g serverless@^3
+  serverless --version  # Verify 3.x.x (not 4.x)
   ```
+  **Note:** This project requires Serverless Framework 3.x. Version 4.x is not compatible.
 
 #### 1.2 AWS Configuration
 - [ ] Install AWS CLI
@@ -141,6 +140,11 @@ serverless remove --stage prod
   aws configure
   # Set: Access Key ID, Secret Access Key, Region (eu-central-1), Output format (json)
   ```
+  **Note:** 
+  - For MVP, you only need **ONE set of credentials** (same AWS account for dev and prod)
+  - Credentials are stored in `~/.aws/credentials` on your Mac
+  - If using separate AWS accounts, create profiles: `aws configure --profile podpdf-dev` and `aws configure --profile podpdf-prod`
+  - See `AWS_CREDENTIALS_SETUP.md` for detailed instructions
 - [ ] Verify AWS access
   ```bash
   aws sts get-caller-identity
@@ -203,7 +207,6 @@ serverless remove --stage prod
 - [ ] Create `resources.yml` with AWS resources
   - DynamoDB tables (Users, UserRateLimits, JobDetails, Analytics, Plans)
   - Cognito User Pool and App Client
-  - WAF configuration (basic rate-based rule)
   - IAM roles and policies
 - [ ] Create `.gitignore` (exclude node_modules, .env files, .serverless)
 

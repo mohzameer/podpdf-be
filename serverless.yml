@@ -1,0 +1,208 @@
+service: podpdf
+
+frameworkVersion: '3'
+
+provider:
+  name: aws
+  runtime: nodejs20.x
+  stage: ${opt:stage, 'dev'}
+  region: ${opt:region, 'eu-central-1'}
+  memorySize: 1024
+  # Default timeout for lightweight HTTP handlers (jobs, accounts, health)
+  timeout: 10
+  
+  environment:
+    STAGE: ${self:provider.stage}
+    LOG_LEVEL: ${self:custom.stages.${self:provider.stage}.logLevel}
+    FREE_TIER_QUOTA: 100
+    RATE_LIMIT_PER_MINUTE: 20
+    MAX_PAGES: 100
+    MAX_INPUT_SIZE_MB: 5
+    QUICKJOB_TIMEOUT_SECONDS: 30
+    USERS_TABLE: ${self:custom.tableNames.${self:provider.stage}.users}
+    USER_RATE_LIMITS_TABLE: ${self:custom.tableNames.${self:provider.stage}.userRateLimits}
+    JOB_DETAILS_TABLE: ${self:custom.tableNames.${self:provider.stage}.jobDetails}
+    ANALYTICS_TABLE: ${self:custom.tableNames.${self:provider.stage}.analytics}
+    PLANS_TABLE: ${self:custom.tableNames.${self:provider.stage}.plans}
+    PDFS_BUCKET: podpdf-${self:provider.stage}-pdfs
+    LONGJOB_QUEUE_URL: !Ref LongJobQueue
+    COGNITO_USER_POOL_ID: !Ref CognitoUserPool
+    COGNITO_CLIENT_ID: !Ref CognitoUserPoolClient
+  
+  httpApi:
+    cors:
+      allowedOrigins: ${self:custom.stages.${self:provider.stage}.cors.allowedOrigins}
+      allowedHeaders:
+        - Content-Type
+        - Authorization
+        - X-PDF-Pages
+        - X-PDF-Truncated
+        - X-Job-Id
+      allowedMethods:
+        - GET
+        - POST
+        - PUT
+        - DELETE
+        - OPTIONS
+      # Note: allowCredentials cannot be true when allowedOrigins includes '*'
+      allowCredentials: false
+      maxAge: 86400
+    authorizers:
+      cognitoAuthorizer:
+        type: jwt
+        identitySource: $request.header.Authorization
+        issuerUrl:
+          Fn::Join:
+            - ''
+            - - 'https://cognito-idp.'
+              - ${self:provider.region}
+              - '.amazonaws.com/'
+              - !Ref CognitoUserPool
+        audience: !Ref CognitoUserPoolClient
+  
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - dynamodb:GetItem
+            - dynamodb:PutItem
+            - dynamodb:UpdateItem
+            - dynamodb:DeleteItem
+            - dynamodb:Query
+            - dynamodb:Scan
+            - dynamodb:BatchWriteItem
+          Resource:
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.users}
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.userRateLimits}
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.jobDetails}
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.analytics}
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.plans}
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.users}/index/*
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.jobDetails}/index/*
+        - Effect: Allow
+          Action:
+            - cognito-idp:GetUser
+            - cognito-idp:SignUp
+            - cognito-idp:AdminGetUser
+          Resource:
+            - arn:aws:cognito-idp:${self:provider.region}:*:userpool/*
+        - Effect: Allow
+          Action:
+            - s3:PutObject
+            - s3:GetObject
+            - s3:DeleteObject
+          Resource:
+            - arn:aws:s3:::podpdf-${self:provider.stage}-pdfs/*
+        - Effect: Allow
+          Action:
+            - sqs:SendMessage
+            - sqs:ReceiveMessage
+            - sqs:DeleteMessage
+            - sqs:GetQueueAttributes
+          Resource:
+            - !GetAtt LongJobQueue.Arn
+
+functions:
+  quickjob:
+    handler: src/handlers/quickjob.handler
+    # Account/region currently limits Lambda memory to 3008 MB
+    memorySize: 3008
+    # Slightly below API Gateway 30s limit to avoid timeout race
+    timeout: 28
+    events:
+      - httpApi:
+          path: /quickjob
+          method: post
+          authorizer: cognitoAuthorizer
+  
+  longjob:
+    handler: src/handlers/longjob.handler
+    memorySize: 1024
+    # Slightly below API Gateway 30s limit to avoid timeout race
+    timeout: 28
+    events:
+      - httpApi:
+          path: /longjob
+          method: post
+          authorizer: cognitoAuthorizer
+  
+  longjob-processor:
+    handler: src/handlers/longjob-processor.handler
+    # Account/region currently limits Lambda memory to 3008 MB
+    memorySize: 3008
+    timeout: 900
+    events:
+      - sqs:
+          arn: !GetAtt LongJobQueue.Arn
+          batchSize: 1
+  
+  jobs:
+    handler: src/handlers/jobs.handler
+    events:
+      - httpApi:
+          path: /jobs
+          method: get
+          authorizer: cognitoAuthorizer
+      - httpApi:
+          path: /jobs/{job_id}
+          method: get
+          authorizer: cognitoAuthorizer
+  
+  accounts:
+    handler: src/handlers/accounts.handler
+    events:
+      - httpApi:
+          path: /accounts
+          method: post
+          # No authorizer - this is the signup endpoint
+      - httpApi:
+          path: /accounts/me
+          method: get
+          authorizer: cognitoAuthorizer
+      - httpApi:
+          path: /accounts/me
+          method: delete
+          authorizer: cognitoAuthorizer
+      - httpApi:
+          path: /accounts/me/webhook
+          method: put
+          authorizer: cognitoAuthorizer
+  
+  health:
+    handler: src/handlers/health.handler
+    events:
+      - httpApi:
+          path: /health
+          method: get
+
+custom:
+  stages:
+    dev:
+      logLevel: debug
+      cors:
+        allowedOrigins:
+          - '*'
+    prod:
+      logLevel: info
+      cors:
+        allowedOrigins:
+          - https://yourdomain.com
+          - https://www.yourdomain.com
+          - https://app.yourdomain.com
+  
+  tableNames:
+    dev:
+      users: podpdf-dev-users
+      userRateLimits: podpdf-dev-user-rate-limits
+      jobDetails: podpdf-dev-job-details
+      analytics: podpdf-dev-analytics
+      plans: podpdf-dev-plans
+    prod:
+      users: podpdf-prod-users
+      userRateLimits: podpdf-prod-user-rate-limits
+      jobDetails: podpdf-prod-job-details
+      analytics: podpdf-prod-analytics
+      plans: podpdf-prod-plans
+
+resources: ${file(resources.yml)}

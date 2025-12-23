@@ -1,0 +1,250 @@
+Resources:
+  # DynamoDB Tables
+  
+  UsersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: ${self:custom.tableNames.${self:provider.stage}.users}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: user_id
+          AttributeType: S
+        - AttributeName: user_sub
+          AttributeType: S
+      KeySchema:
+        - AttributeName: user_id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: UserSubIndex
+          KeySchema:
+            - AttributeName: user_sub
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      Tags:
+        - Key: Stage
+          Value: ${self:provider.stage}
+        - Key: Service
+          Value: podpdf
+  
+  UserRateLimitsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: ${self:custom.tableNames.${self:provider.stage}.userRateLimits}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: user_sub
+          AttributeType: S
+        - AttributeName: minute_timestamp
+          AttributeType: S
+      KeySchema:
+        - AttributeName: user_sub
+          KeyType: HASH
+        - AttributeName: minute_timestamp
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        Enabled: true
+        AttributeName: ttl
+      Tags:
+        - Key: Stage
+          Value: ${self:provider.stage}
+        - Key: Service
+          Value: podpdf
+      # Note: user_sub is kept as partition key for fast lookups from JWT token
+      # user_id can be stored as an attribute for consistency if needed
+  
+  JobDetailsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: ${self:custom.tableNames.${self:provider.stage}.jobDetails}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: job_id
+          AttributeType: S
+        - AttributeName: user_sub
+          AttributeType: S
+        - AttributeName: created_at
+          AttributeType: S
+      KeySchema:
+        - AttributeName: job_id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: UserSubCreatedAtIndex
+          KeySchema:
+            - AttributeName: user_sub
+              KeyType: HASH
+            - AttributeName: created_at
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      Tags:
+        - Key: Stage
+          Value: ${self:provider.stage}
+        - Key: Service
+          Value: podpdf
+  
+  AnalyticsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: ${self:custom.tableNames.${self:provider.stage}.analytics}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: job_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: job_id
+          KeyType: HASH
+      Tags:
+        - Key: Stage
+          Value: ${self:provider.stage}
+        - Key: Service
+          Value: podpdf
+  
+  PlansTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: ${self:custom.tableNames.${self:provider.stage}.plans}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: plan_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: plan_id
+          KeyType: HASH
+      Tags:
+        - Key: Stage
+          Value: ${self:provider.stage}
+        - Key: Service
+          Value: podpdf
+  
+  # S3 Bucket for PDF Storage
+  
+  PDFsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: podpdf-${self:provider.stage}-pdfs
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Suspended
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldPDFs
+            Status: Enabled
+            ExpirationInDays: 1
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      Tags:
+        - Key: Stage
+          Value: ${self:provider.stage}
+        - Key: Service
+          Value: podpdf
+  
+  # SQS Queue for Long Job Processing
+  
+  LongJobQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: podpdf-${self:provider.stage}-longjob-queue
+      VisibilityTimeout: 900
+      MessageRetentionPeriod: 1209600
+      ReceiveMessageWaitTimeSeconds: 0
+      Tags:
+        - Key: Stage
+          Value: ${self:provider.stage}
+        - Key: Service
+          Value: podpdf
+  
+  # Cognito User Pool
+  
+  CognitoUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: podpdf-${self:provider.stage}-user-pool
+      AutoVerifiedAttributes:
+        - email
+      UsernameAttributes:
+        - email
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireUppercase: true
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+      Schema:
+        - Name: email
+          AttributeDataType: String
+          Required: true
+          Mutable: true
+      UserPoolTags:
+        Stage: ${self:provider.stage}
+        Service: podpdf
+  
+  CognitoUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: podpdf-${self:provider.stage}-client
+      UserPoolId: !Ref CognitoUserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      SupportedIdentityProviders:
+        - COGNITO
+      TokenValidityUnits:
+        AccessToken: hours
+        IdToken: hours
+        RefreshToken: days
+      AccessTokenValidity: 24
+      IdTokenValidity: 24
+      RefreshTokenValidity: 30
+
+Outputs:
+  CognitoUserPoolId:
+    Description: Cognito User Pool ID
+    Value: !Ref CognitoUserPool
+    Export:
+      Name: ${self:provider.stage}-CognitoUserPoolId
+  
+  CognitoUserPoolClientId:
+    Description: Cognito User Pool Client ID
+    Value: !Ref CognitoUserPoolClient
+    Export:
+      Name: ${self:provider.stage}-CognitoUserPoolClientId
+  
+  UsersTableName:
+    Description: Users DynamoDB Table Name
+    Value: !Ref UsersTable
+    Export:
+      Name: ${self:provider.stage}-UsersTableName
+  
+  JobDetailsTableName:
+    Description: Job Details DynamoDB Table Name
+    Value: !Ref JobDetailsTable
+    Export:
+      Name: ${self:provider.stage}-JobDetailsTableName
+  
+  PDFsBucketName:
+    Description: S3 Bucket Name for PDF Storage
+    Value: !Ref PDFsBucket
+    Export:
+      Name: ${self:provider.stage}-PDFsBucketName
+  
+  LongJobQueueUrl:
+    Description: SQS Queue URL for Long Job Processing
+    Value: !Ref LongJobQueue
+    Export:
+      Name: ${self:provider.stage}-LongJobQueueUrl
+  
+  LongJobQueueArn:
+    Description: SQS Queue ARN for Long Job Processing
+    Value: !GetAtt LongJobQueue.Arn
+    Export:
+      Name: ${self:provider.stage}-LongJobQueueArn
+

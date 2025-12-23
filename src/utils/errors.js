@@ -1,0 +1,218 @@
+/**
+ * Error response formatting utility
+ * Formats errors according to the API specification
+ */
+
+/**
+ * Create a standardized error response
+ * @param {number} statusCode - HTTP status code
+ * @param {string} code - Error code (e.g., 'ACCOUNT_NOT_FOUND')
+ * @param {string} message - Human-readable error message
+ * @param {object} details - Additional error details
+ * @returns {object} Formatted error response
+ */
+function createErrorResponse(statusCode, code, message, details = {}) {
+  return {
+    statusCode,
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      error: {
+        code,
+        message,
+        details,
+      },
+    }),
+  };
+}
+
+/**
+ * Bad Request (400) errors
+ */
+const BadRequest = {
+  INVALID_INPUT_TYPE: (provided, allowed) =>
+    createErrorResponse(
+      400,
+      'INVALID_INPUT_TYPE',
+      `input_type must be either 'html' or 'markdown'`,
+      { provided, allowed: ['html', 'markdown'] }
+    ),
+
+  MISSING_INPUT_TYPE: () =>
+    createErrorResponse(400, 'MISSING_INPUT_TYPE', 'input_type field is required', {
+      required: 'input_type',
+    }),
+
+  MISSING_CONTENT_FIELD: (inputType) =>
+    createErrorResponse(
+      400,
+      'MISSING_CONTENT_FIELD',
+      `${inputType} field is required when input_type is '${inputType}'`,
+      { input_type: inputType, missing_field: inputType }
+    ),
+
+  EMPTY_CONTENT_FIELD: (inputType) =>
+    createErrorResponse(
+      400,
+      'EMPTY_CONTENT_FIELD',
+      `${inputType} field cannot be empty`,
+      { input_type: inputType, field: inputType }
+    ),
+
+  CONFLICTING_FIELDS: (inputType) =>
+    createErrorResponse(
+      400,
+      'CONFLICTING_FIELDS',
+      'Both html and markdown fields cannot be provided. Provide only the field matching your input_type.',
+      {
+        input_type: inputType,
+        conflict: inputType === 'html' ? 'markdown field should not be present when input_type is \'html\'' : 'html field should not be present when input_type is \'markdown\'',
+      }
+    ),
+
+  WRONG_FIELD_PROVIDED: (inputType, invalidField) =>
+    createErrorResponse(
+      400,
+      'WRONG_FIELD_PROVIDED',
+      `${invalidField} field should not be present when input_type is '${inputType}'`,
+      { input_type: inputType, invalid_field: invalidField }
+    ),
+
+  CONTENT_TYPE_MISMATCH: (inputType, detectedType) =>
+    createErrorResponse(
+      400,
+      'CONTENT_TYPE_MISMATCH',
+      `Content appears to be ${detectedType.toUpperCase()} but input_type is '${inputType}'`,
+      {
+        input_type: inputType,
+        detected_type: detectedType,
+        reason: 'Content starts with HTML tags',
+      }
+    ),
+
+  INPUT_SIZE_EXCEEDED: (maxSize) =>
+    createErrorResponse(
+      400,
+      'INPUT_SIZE_EXCEEDED',
+      `Input size exceeds the maximum limit of ${maxSize}MB`,
+      { max_size_mb: maxSize }
+    ),
+
+  INVALID_PLAN_ID: (planId) =>
+    createErrorResponse(400, 'INVALID_PLAN_ID', `Invalid plan_id: ${planId}`, {
+      provided: planId,
+    }),
+
+  INVALID_WEBHOOK_URL: () =>
+    createErrorResponse(
+      400,
+      'INVALID_WEBHOOK_URL',
+      'webhook_url must be a valid HTTPS URL',
+      { action_required: 'provide_valid_https_url' }
+    ),
+};
+
+/**
+ * Unauthorized (401) errors
+ */
+const Unauthorized = {
+  MISSING_TOKEN: () =>
+    createErrorResponse(401, 'UNAUTHORIZED', 'Missing or invalid JWT token', {
+      action_required: 'provide_valid_jwt_token',
+    }),
+
+  INVALID_TOKEN: () =>
+    createErrorResponse(401, 'UNAUTHORIZED', 'Invalid or expired JWT token', {
+      action_required: 'obtain_new_token',
+    }),
+};
+
+/**
+ * Forbidden (403) errors
+ */
+const Forbidden = {
+  ACCOUNT_NOT_FOUND: () =>
+    createErrorResponse(
+      403,
+      'ACCOUNT_NOT_FOUND',
+      'User account not found. Please create an account before using the API.',
+      { action_required: 'create_account' }
+    ),
+
+  RATE_LIMIT_EXCEEDED: (limit, window, retryAfter) =>
+    createErrorResponse(
+      403,
+      'RATE_LIMIT_EXCEEDED',
+      'Rate limit exceeded',
+      {
+        limit,
+        window,
+        retry_after: retryAfter,
+        type: 'per_user_rate_limit',
+      }
+    ),
+
+  QUOTA_EXCEEDED: (currentUsage, quota) =>
+    createErrorResponse(
+      403,
+      'QUOTA_EXCEEDED',
+      'All-time quota of 100 PDFs has been reached. Please upgrade to a paid plan to continue using the service.',
+      {
+        current_usage: currentUsage,
+        quota,
+        action_required: 'upgrade_to_paid_plan',
+      }
+    ),
+
+  ACCOUNT_ALREADY_EXISTS: () =>
+    createErrorResponse(
+      409,
+      'ACCOUNT_ALREADY_EXISTS',
+      'Account already exists for this user',
+      { action_required: 'use_existing_account' }
+    ),
+};
+
+/**
+ * Request Timeout (408) errors
+ */
+const RequestTimeout = {
+  QUICKJOB_TIMEOUT: (jobId, timeoutSeconds) =>
+    createErrorResponse(
+      408,
+      'QUICKJOB_TIMEOUT',
+      'Job processing exceeded 30-second timeout. Please use /longjob endpoint for larger documents.',
+      {
+        job_id: jobId,
+        timeout_seconds: timeoutSeconds,
+        suggestion: 'use_longjob_endpoint',
+      }
+    ),
+};
+
+/**
+ * Internal Server Error (500)
+ */
+const InternalServerError = {
+  GENERIC: (message = 'Internal server error') =>
+    createErrorResponse(500, 'INTERNAL_SERVER_ERROR', message, {}),
+
+  PDF_GENERATION_FAILED: (errorMessage) =>
+    createErrorResponse(
+      500,
+      'PDF_GENERATION_FAILED',
+      'Failed to generate PDF',
+      { error: errorMessage }
+    ),
+};
+
+module.exports = {
+  createErrorResponse,
+  BadRequest,
+  Unauthorized,
+  Forbidden,
+  RequestTimeout,
+  InternalServerError,
+};
+
