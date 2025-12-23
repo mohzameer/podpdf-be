@@ -77,7 +77,7 @@ aws configure
 # Or use environment variables
 export AWS_ACCESS_KEY_ID=your_access_key
 export AWS_SECRET_ACCESS_KEY=your_secret_key
-export AWS_DEFAULT_REGION=us-east-1
+export AWS_DEFAULT_REGION=eu-central-1
 ```
 
 ### 3. Verify Serverless Framework Installation
@@ -262,7 +262,7 @@ provider:
   name: aws
   runtime: nodejs20.x
   stage: ${opt:stage, 'dev'}
-  region: ${opt:region, 'us-east-1'}
+  region: ${opt:region, 'eu-central-1'}
   memorySize: 10240
   timeout: 720
   environment:
@@ -459,7 +459,7 @@ aws lambda update-function-configuration \
 # List all resources in stack
 aws cloudformation describe-stack-resources \
   --stack-name podpdf-dev \
-  --region us-east-1
+  --region eu-central-1
 ```
 
 ### Monitoring Deployments
@@ -468,7 +468,7 @@ aws cloudformation describe-stack-resources \
 # Watch CloudFormation events
 aws cloudformation describe-stack-events \
   --stack-name podpdf-dev \
-  --region us-east-1 \
+  --region eu-central-1 \
   --max-items 10
 ```
 
@@ -550,12 +550,12 @@ serverless print --stage dev
    ```bash
    aws cloudformation describe-stack-events \
      --stack-name podpdf-dev \
-     --region us-east-1
+     --region eu-central-1
    ```
 
 3. **Test API Endpoint**
    ```bash
-   curl -X POST https://your-api-id.execute-api.us-east-1.amazonaws.com/generate \
+   curl -X POST https://your-api-id.execute-api.eu-central-1.amazonaws.com/generate \
      -H "Authorization: Bearer YOUR_JWT_TOKEN" \
      -H "Content-Type: application/json" \
      -d '{"html": "<html><body>Test</body></html>"}'
