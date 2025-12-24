@@ -182,6 +182,15 @@ Resources:
           AttributeDataType: String
           Required: true
           Mutable: true
+        - Name: name
+          AttributeDataType: String
+          Required: false
+          Mutable: true
+      VerificationMessageTemplate:
+        DefaultEmailOption: CONFIRM_WITH_LINK
+        EmailSubject: "Verify your PodPDF account"
+        # Cognito requires the placeholder {####}; with CONFIRM_WITH_LINK it becomes a verification link
+        EmailMessage: "Please click the link below to verify your email address: {####}"
       UserPoolTags:
         Stage: ${self:provider.stage}
         Service: podpdf

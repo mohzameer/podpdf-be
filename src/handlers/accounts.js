@@ -77,7 +77,7 @@ async function createAccount(event) {
       return BadRequest.MISSING_INPUT_TYPE(); // Reuse error format
     }
 
-    const { email, password, plan_id } = body;
+    const { email, password, name, plan_id } = body;
 
     // Validate required fields
     if (!email || typeof email !== 'string' || !email.trim()) {
@@ -106,6 +106,22 @@ async function createAccount(event) {
       };
     }
 
+    // Build user attributes for Cognito
+    const userAttributes = [
+      {
+        Name: 'email',
+        Value: email,
+      },
+    ];
+
+    // Add name if provided
+    if (name && typeof name === 'string' && name.trim()) {
+      userAttributes.push({
+        Name: 'name',
+        Value: name.trim(),
+      });
+    }
+
     // Sign up user in Cognito
     let cognitoUserSub;
     try {
@@ -113,12 +129,7 @@ async function createAccount(event) {
         ClientId: COGNITO_CLIENT_ID,
         Username: email,
         Password: password,
-        UserAttributes: [
-          {
-            Name: 'email',
-            Value: email,
-          },
-        ],
+        UserAttributes: userAttributes,
       });
 
       const signUpResponse = await cognitoClient.send(signUpCommand);
@@ -164,6 +175,7 @@ async function createAccount(event) {
       user_id: userId,
       user_sub: cognitoUserSub,
       email: email,
+      display_name: name && typeof name === 'string' && name.trim() ? name.trim() : null,
       plan_id: plan_id || 'free-basic',
       account_status: 'free',
       total_pdf_count: 0,
@@ -180,10 +192,11 @@ async function createAccount(event) {
       body: JSON.stringify({
         user_id: userId,
         email: userRecord.email,
+        display_name: userRecord.display_name,
         plan_id: userRecord.plan_id,
         account_status: userRecord.account_status,
         created_at: userRecord.created_at,
-        message: 'Account created successfully. Please sign in to get your JWT token.',
+        message: 'Account created successfully. Please check your email to verify your account, then sign in to get your JWT token.',
       }),
     };
   } catch (error) {
