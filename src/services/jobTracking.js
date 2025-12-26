@@ -4,7 +4,7 @@
  */
 
 const { v4: uuidv4 } = require('uuid');
-const { putItem, updateItem, getItem } = require('./dynamodb');
+const { putItem, updateItem, getItem, queryItems } = require('./dynamodb');
 const logger = require('../utils/logger');
 
 const JOB_DETAILS_TABLE = process.env.JOB_DETAILS_TABLE;
@@ -27,7 +27,7 @@ async function createJobRecord(jobData) {
   try {
     const {
       jobId,
-      userSub,
+      userId, // user_id (ULID) instead of userSub
       jobType, // 'quick' or 'long'
       mode, // 'html' or 'markdown'
       status, // 'queued', 'processing', 'completed', 'failed', 'timeout'
@@ -38,7 +38,7 @@ async function createJobRecord(jobData) {
 
     const jobRecord = {
       job_id: jobId,
-      user_sub: userSub,
+      user_id: userId,
       job_type: jobType,
       mode,
       status,
@@ -52,7 +52,7 @@ async function createJobRecord(jobData) {
       jobId,
       jobType,
       status,
-      userSub,
+      userId,
     });
 
     return jobRecord;
@@ -80,9 +80,9 @@ async function updateJobRecord(jobId, updates) {
     let updateExpr = 'SET ';
     const setParts = [];
 
-    Object.keys(updates).forEach((key, index) {
+    Object.keys(updates).forEach((key, index) => {
       const valueKey = `:val${index}`;
-      const nameKey = `#key${index}`;
+      const nameKey = `key${index}`;
       
       setParts.push(`#${nameKey} = ${valueKey}`);
       expressionAttributeNames[`#${nameKey}`] = key;
@@ -187,6 +187,120 @@ async function getJobRecord(jobId) {
 }
 
 /**
+ * List jobs for a user
+ * @param {string} userId - User ID (ULID)
+ * @param {object} options - Query options
+ * @param {number} options.limit - Maximum number of jobs to return (default: 50, max: 100)
+ * @param {string} options.nextToken - Pagination token
+ * @param {string} options.status - Filter by status (optional)
+ * @param {string} options.jobType - Filter by job_type (optional)
+ * @param {boolean} options.truncated - Filter by truncated flag (optional)
+ * @returns {Promise<{jobs: array, nextToken: string|null, count: number}>}
+ */
+async function listJobsByUserId(userId, options = {}) {
+  try {
+    const limit = Math.min(Math.max(parseInt(options.limit) || 50, 1), 100);
+    const nextToken = options.nextToken || null;
+
+    // Build filter expression for additional filters
+    let filterExpression = null;
+    const expressionAttributeValues = { ':user_id': userId };
+    const expressionAttributeNames = {};
+
+    if (options.status) {
+      filterExpression = filterExpression 
+        ? `${filterExpression} AND #status = :status`
+        : '#status = :status';
+      expressionAttributeNames['#status'] = 'status';
+      expressionAttributeValues[':status'] = options.status;
+    }
+
+    if (options.jobType) {
+      filterExpression = filterExpression
+        ? `${filterExpression} AND #job_type = :job_type`
+        : '#job_type = :job_type';
+      expressionAttributeNames['#job_type'] = 'job_type';
+      expressionAttributeValues[':job_type'] = options.jobType;
+    }
+
+    if (options.truncated !== undefined && options.truncated !== null) {
+      filterExpression = filterExpression
+        ? `${filterExpression} AND truncated = :truncated`
+        : 'truncated = :truncated';
+      expressionAttributeValues[':truncated'] = options.truncated;
+    }
+
+    // Parse nextToken if provided
+    let exclusiveStartKey = null;
+    if (nextToken) {
+      try {
+        exclusiveStartKey = JSON.parse(Buffer.from(nextToken, 'base64').toString());
+      } catch (error) {
+        logger.warn('Invalid nextToken provided', { nextToken, error: error.message });
+      }
+    }
+
+    // Query jobs by user_id using GSI, ordered by created_at descending
+    const { query } = require('./dynamodb');
+    const result = await query(
+      JOB_DETAILS_TABLE,
+      'user_id = :user_id',
+      expressionAttributeValues,
+      'UserIdCreatedAtIndex',
+      limit,
+      exclusiveStartKey,
+      filterExpression,
+      Object.keys(expressionAttributeNames).length > 0 ? expressionAttributeNames : null,
+      false // scanIndexForward = false (descending order)
+    );
+
+    const jobs = (result.Items || []).map(job => {
+      // Build response object (exclude internal fields)
+      const jobResponse = {
+        job_id: job.job_id,
+        status: job.status,
+        job_type: job.job_type,
+        mode: job.mode,
+        pages: job.pages || null,
+        truncated: job.truncated || false,
+        created_at: job.created_at,
+        completed_at: job.completed_at || null,
+        error_message: job.error_message || null,
+      };
+
+      // Add long job specific fields
+      if (job.job_type === 'long') {
+        jobResponse.s3_url = job.s3_url || null;
+        jobResponse.s3_url_expires_at = job.s3_url_expires_at || null;
+        jobResponse.webhook_delivered = job.webhook_delivered || false;
+        jobResponse.webhook_delivered_at = job.webhook_delivered_at || null;
+        jobResponse.webhook_retry_count = job.webhook_retry_count || 0;
+      }
+
+      // Add quick job specific fields
+      if (job.job_type === 'quick') {
+        jobResponse.timeout_occurred = job.timeout_occurred || false;
+      }
+
+      return jobResponse;
+    });
+
+    return {
+      jobs,
+      nextToken: result.LastEvaluatedKey ? Buffer.from(JSON.stringify(result.LastEvaluatedKey)).toString('base64') : null,
+      count: jobs.length,
+    };
+  } catch (error) {
+    logger.error('Error listing jobs', {
+      error: error.message,
+      userId,
+      options,
+    });
+    throw error;
+  }
+}
+
+/**
  * Create analytics record
  * @param {object} analyticsData - Analytics data
  * @returns {Promise<void>}
@@ -240,6 +354,7 @@ module.exports = {
   updateJobRecord,
   atomicallyStartProcessing,
   getJobRecord,
+  listJobsByUserId,
   createAnalyticsRecord,
 };
 

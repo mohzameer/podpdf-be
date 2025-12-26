@@ -14,7 +14,7 @@ const {
 } = require('../services/jobTracking');
 const { generatePDF } = require('../services/pdf');
 const { uploadPDF, generateSignedUrl, getExpirationTimestamp } = require('../services/s3');
-const { incrementPdfCount, getUserAccount } = require('../services/business');
+const { incrementPdfCount, getUserAccount, getPlan } = require('../services/business');
 const { InternalServerError } = require('../utils/errors');
 
 const MAX_WEBHOOK_RETRIES = 3;
@@ -157,10 +157,12 @@ async function processMessage(record) {
     // Parse SQS message body
     const messageBody = JSON.parse(record.body);
     jobId = messageBody.job_id;
-    userSub = messageBody.user_sub;
+    const userId = messageBody.user_id || messageBody.user_sub; // Support both for migration
+    userSub = messageBody.user_sub; // Keep for getUserAccount lookup
 
     logger.info('Processing long job', {
       jobId,
+      userId,
       userSub,
       messageId: record.messageId,
     });
@@ -188,8 +190,48 @@ async function processMessage(record) {
     const { input_type, content, options, webhook_url } = messageBody;
 
     // Generate PDF
-    const pdfResult = await generatePDF(content, input_type, options || {});
-    const { pdf, pages, truncated } = pdfResult;
+    let pdfResult;
+    try {
+      pdfResult = await generatePDF(content, input_type, options || {});
+    } catch (error) {
+      // Check for page limit exceeded error
+      if (error.message && error.message.startsWith('PAGE_LIMIT_EXCEEDED:')) {
+        const [, pageCount, maxPages] = error.message.split(':');
+        await updateJobRecord(jobId, {
+          status: 'failed',
+          error_message: `PDF page count (${pageCount}) exceeds maximum allowed pages (${maxPages})`,
+        });
+
+        await createAnalyticsRecord({
+          jobId,
+          jobType: 'long',
+          mode: input_type,
+          status: 'failed',
+          jobDuration: Date.now() - startTime,
+        });
+
+        // Deliver webhook with error if configured
+        if (webhook_url) {
+          await deliverWebhook(webhook_url, {
+            job_id: jobId,
+            status: 'failed',
+            error_message: `PDF page count (${pageCount}) exceeds maximum allowed pages (${maxPages})`,
+            created_at: job.created_at,
+            failed_at: new Date().toISOString(),
+          });
+        }
+
+        logger.error('PDF generation failed - page limit exceeded', {
+          jobId,
+          pageCount: parseInt(pageCount, 10),
+          maxPages: parseInt(maxPages, 10),
+        });
+        return; // Exit early, job marked as failed
+      }
+      throw error;
+    }
+    
+    const { pdf, pages } = pdfResult;
 
     // Upload PDF to S3
     const s3Key = await uploadPDF(jobId, pdf);
@@ -198,22 +240,27 @@ async function processMessage(record) {
     const signedUrl = await generateSignedUrl(s3Key, 3600);
     const expiresAt = getExpirationTimestamp(3600);
 
-    // Get user account for PDF count increment
+    // Get user account and plan for PDF count increment and billing
     const user = await getUserAccount(userSub);
+    let plan = null;
+    if (user) {
+      const planId = user.plan_id || 'free-basic';
+      plan = await getPlan(planId);
+    }
 
     // Update job record with completion
     await updateJobRecord(jobId, {
       status: 'completed',
       pages,
-      truncated,
+      truncated: false,
       s3_key: s3Key,
       s3_url: signedUrl,
       s3_url_expires_at: expiresAt,
     });
 
-    // Increment PDF count
+    // Increment PDF count and track billing
     if (user && user.user_id) {
-      await incrementPdfCount(userSub, user.user_id);
+      await incrementPdfCount(userSub, user.user_id, plan);
     }
 
     // Create analytics record
@@ -235,7 +282,7 @@ async function processMessage(record) {
         s3_url_expires_at: expiresAt,
         pages,
         mode: input_type,
-        truncated,
+        truncated: false,
         created_at: job.created_at,
         completed_at: new Date().toISOString(),
       };
@@ -281,7 +328,7 @@ async function processMessage(record) {
     logger.info('Long job processed successfully', {
       jobId,
       pages,
-      truncated,
+      truncated: false,
       duration_ms: Date.now() - startTime,
     });
   } catch (error) {

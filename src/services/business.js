@@ -10,6 +10,7 @@ const logger = require('../utils/logger');
 const USERS_TABLE = process.env.USERS_TABLE;
 const USER_RATE_LIMITS_TABLE = process.env.USER_RATE_LIMITS_TABLE;
 const PLANS_TABLE = process.env.PLANS_TABLE;
+const BILLS_TABLE = process.env.BILLS_TABLE;
 const RATE_LIMIT_PER_MINUTE = parseInt(process.env.RATE_LIMIT_PER_MINUTE || '20', 10);
 const FREE_TIER_QUOTA = parseInt(process.env.FREE_TIER_QUOTA || '100', 10);
 
@@ -67,7 +68,7 @@ async function getPlan(planId) {
  * @param {object} plan - User's plan configuration
  * @returns {Promise<{allowed: boolean, error: object|null}>}
  */
-async function checkRateLimit(userSub, plan) {
+async function checkRateLimit(userSub, userId, plan) {
   try {
     // If plan has no rate limit (paid tier), allow
     if (!plan.rate_limit_per_minute) {
@@ -81,7 +82,7 @@ async function checkRateLimit(userSub, plan) {
     // Calculate TTL (1 hour from now)
     const ttl = Math.floor(now.getTime() / 1000) + 3600;
 
-    // Try to get existing rate limit record
+    // Use user_sub directly from JWT token (no DynamoDB lookup needed)
     let rateLimitRecord = await getItem(USER_RATE_LIMITS_TABLE, {
       user_sub: userSub,
       minute_timestamp: minuteTimestamp,
@@ -112,7 +113,7 @@ async function checkRateLimit(userSub, plan) {
         { ':inc': 1 }
       );
     } else {
-      // Create new rate limit record
+      // Create new rate limit record with user_sub
       await putItem(USER_RATE_LIMITS_TABLE, {
         user_sub: userSub,
         minute_timestamp: minuteTimestamp,
@@ -126,6 +127,7 @@ async function checkRateLimit(userSub, plan) {
     logger.error('Rate limit check error', {
       error: error.message,
       userSub,
+      userId,
     });
     // On error, allow the request (fail open)
     return { allowed: true, error: null };
@@ -141,18 +143,75 @@ async function checkRateLimit(userSub, plan) {
  */
 async function checkQuota(userSub, user, plan) {
   try {
-    // If plan has no monthly quota (paid tier), allow
-    if (plan.monthly_quota === null || plan.monthly_quota === undefined) {
-      return { allowed: true, error: null };
+    // If plan type is paid or plan has no monthly quota (paid tier), allow
+    if (plan.type === 'paid' || plan.monthly_quota === null || plan.monthly_quota === undefined) {
+      // Only clear quota_exceeded flag if plan type is explicitly paid
+      if (plan.type === 'paid' && user.quota_exceeded && user.user_id) {
+        try {
+          await updateItem(
+            USERS_TABLE,
+            { user_id: user.user_id },
+            'SET quota_exceeded = :false',
+            { ':false': false }
+          );
+        } catch (error) {
+          logger.warn('Could not clear quota_exceeded flag', {
+            userSub,
+            userId: user.user_id,
+            error: error.message,
+          });
+        }
+      }
+      // If it's a paid plan, allow
+      if (plan.type === 'paid') {
+        return { allowed: true, error: null };
+      }
+      // If monthly_quota is null/undefined but plan type is not paid, fall through to use FREE_TIER_QUOTA
     }
 
-    // Check all-time quota for free tier
+    // Check all-time quota for free tier using quota from plan
+    const quotaLimit = plan.monthly_quota || FREE_TIER_QUOTA; // Fallback to env var if plan quota is missing
     const currentUsage = user.total_pdf_count || 0;
-    if (currentUsage >= FREE_TIER_QUOTA) {
+    if (currentUsage >= quotaLimit) {
+      // Set quota_exceeded flag if not already set
+      if (!user.quota_exceeded && user.user_id) {
+        try {
+          await updateItem(
+            USERS_TABLE,
+            { user_id: user.user_id },
+            'SET quota_exceeded = :true',
+            { ':true': true }
+          );
+        } catch (error) {
+          logger.warn('Could not set quota_exceeded flag', {
+            userSub,
+            userId: user.user_id,
+            error: error.message,
+          });
+        }
+      }
       return {
         allowed: false,
-        error: Forbidden.QUOTA_EXCEEDED(currentUsage, FREE_TIER_QUOTA),
+        error: Forbidden.QUOTA_EXCEEDED(currentUsage, quotaLimit, true),
       };
+    }
+
+    // Clear quota_exceeded flag if user is under quota
+    if (user.quota_exceeded && user.user_id) {
+      try {
+        await updateItem(
+          USERS_TABLE,
+          { user_id: user.user_id },
+          'SET quota_exceeded = :false',
+          { ':false': false }
+        );
+      } catch (error) {
+        logger.warn('Could not clear quota_exceeded flag', {
+          userSub,
+          userId: user.user_id,
+          error: error.message,
+        });
+      }
     }
 
     return { allowed: true, error: null };
@@ -167,14 +226,34 @@ async function checkQuota(userSub, user, plan) {
 }
 
 /**
- * Increment PDF count for user
+ * Increment PDF count for user and track billing for paid users in Bills table
  * @param {string} userSub - Cognito user sub
  * @param {string} userId - User ID (ULID)
+ * @param {object} plan - User's plan configuration (optional, for billing tracking)
  * @returns {Promise<void>}
  */
-async function incrementPdfCount(userSub, userId) {
+async function incrementPdfCount(userSub, userId, plan = null) {
   try {
-    // Try to update by user_id first (primary key)
+    // Get current month in YYYY-MM format
+    const now = new Date();
+    const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const nowISO = now.toISOString();
+    
+    // Get user account
+    const user = await getUserAccount(userSub);
+    if (!user) {
+      logger.warn('Could not increment PDF count - user not found', {
+        userSub,
+        userId,
+      });
+      return;
+    }
+    
+    // Calculate billing amount if paid plan
+    const isPaidPlan = plan && plan.type === 'paid' && plan.price_per_pdf;
+    const billingIncrement = isPaidPlan ? plan.price_per_pdf : 0;
+    
+    // Update total_pdf_count in Users table
     try {
       await updateItem(
         USERS_TABLE,
@@ -183,9 +262,8 @@ async function incrementPdfCount(userSub, userId) {
         { ':zero': 0, ':inc': 1 }
       );
     } catch (error) {
-      // If user_id update fails, try to find by user_sub and update
-      const user = await getUserAccount(userSub);
-      if (user && user.user_id) {
+      // If user_id update fails, try with actual user_id from user object
+      if (user.user_id && user.user_id !== userId) {
         await updateItem(
           USERS_TABLE,
           { user_id: user.user_id },
@@ -193,10 +271,59 @@ async function incrementPdfCount(userSub, userId) {
           { ':zero': 0, ':inc': 1 }
         );
       } else {
-        logger.warn('Could not increment PDF count - user not found', {
+        logger.warn('Could not increment PDF count in Users table', {
           userSub,
           userId,
+          error: error.message,
         });
+      }
+    }
+    
+    // For paid plans, create or update bill record in Bills table
+    if (isPaidPlan) {
+      try {
+        // Try to get existing bill for this month
+        const { getItem } = require('./dynamodb');
+        const existingBill = await getItem(BILLS_TABLE, {
+          user_id: userId,
+          billing_month: currentMonth,
+        });
+        
+        if (existingBill) {
+          // Update existing bill
+          await updateItem(
+            BILLS_TABLE,
+            {
+              user_id: userId,
+              billing_month: currentMonth,
+            },
+            'SET monthly_pdf_count = monthly_pdf_count + :inc, monthly_billing_amount = monthly_billing_amount + :billing, updated_at = :updated_at',
+            {
+              ':inc': 1,
+              ':billing': billingIncrement,
+              ':updated_at': nowISO,
+            }
+          );
+        } else {
+          // Create new bill record for this month
+          await putItem(BILLS_TABLE, {
+            user_id: userId,
+            billing_month: currentMonth,
+            monthly_pdf_count: 1,
+            monthly_billing_amount: billingIncrement,
+            is_paid: false,
+            created_at: nowISO,
+            updated_at: nowISO,
+          });
+        }
+      } catch (error) {
+        logger.error('Error updating bill record', {
+          error: error.message,
+          userSub,
+          userId,
+          billingMonth: currentMonth,
+        });
+        // Don't throw - bill tracking is not critical for PDF generation
       }
     }
   } catch (error) {

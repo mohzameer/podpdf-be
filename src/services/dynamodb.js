@@ -37,14 +37,20 @@ async function putItem(tableName, item) {
  * Update an item in a table
  */
 async function updateItem(tableName, key, updateExpression, expressionAttributeValues, expressionAttributeNames = {}) {
-  const command = new UpdateCommand({
+  const params = {
     TableName: tableName,
     Key: key,
     UpdateExpression: updateExpression,
     ExpressionAttributeValues: expressionAttributeValues,
-    ExpressionAttributeNames: expressionAttributeNames,
     ReturnValues: 'ALL_NEW',
-  });
+  };
+  
+  // Only include ExpressionAttributeNames if it's not empty
+  if (expressionAttributeNames && Object.keys(expressionAttributeNames).length > 0) {
+    params.ExpressionAttributeNames = expressionAttributeNames;
+  }
+  
+  const command = new UpdateCommand(params);
   const response = await docClient.send(command);
   return response.Attributes;
 }
@@ -63,11 +69,12 @@ async function deleteItem(tableName, key) {
 /**
  * Query a table
  */
-async function query(tableName, keyConditionExpression, expressionAttributeValues, indexName = null, limit = null, exclusiveStartKey = null) {
+async function query(tableName, keyConditionExpression, expressionAttributeValues, indexName = null, limit = null, exclusiveStartKey = null, filterExpression = null, expressionAttributeNames = null, scanIndexForward = true) {
   const params = {
     TableName: tableName,
     KeyConditionExpression: keyConditionExpression,
     ExpressionAttributeValues: expressionAttributeValues,
+    ScanIndexForward: scanIndexForward,
   };
   if (indexName) {
     params.IndexName = indexName;
@@ -77,6 +84,12 @@ async function query(tableName, keyConditionExpression, expressionAttributeValue
   }
   if (exclusiveStartKey) {
     params.ExclusiveStartKey = exclusiveStartKey;
+  }
+  if (filterExpression) {
+    params.FilterExpression = filterExpression;
+  }
+  if (expressionAttributeNames) {
+    params.ExpressionAttributeNames = expressionAttributeNames;
   }
   const command = new QueryCommand(params);
   const response = await docClient.send(command);

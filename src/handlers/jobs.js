@@ -1,14 +1,15 @@
 /**
  * Jobs handler
- * Handles: GET /jobs/{job_id}
+ * Handles: GET /jobs and GET /jobs/{job_id}
  */
 
 const logger = require('../utils/logger');
 const { extractUserSub } = require('../middleware/auth');
-const { getJobRecord } = require('../services/jobTracking');
-const { Forbidden, InternalServerError } = require('../utils/errors');
+const { getJobRecord, listJobsByUserId } = require('../services/jobTracking');
+const { Forbidden, InternalServerError, BadRequest } = require('../utils/errors');
 
 /**
+ * GET /jobs - List jobs for authenticated user
  * GET /jobs/{job_id} - Get job status and details
  */
 async function handler(event) {
@@ -27,25 +28,37 @@ async function handler(event) {
       };
     }
 
-    // Extract job_id from path
-    const path = event.requestContext?.http?.path || event.path;
-    const pathParams = event.requestContext?.http?.pathParameters || event.pathParameters || {};
-    const jobId = pathParams.job_id;
-
-    if (!jobId) {
+    // Get user account to get user_id
+    const { getUserAccount } = require('../services/business');
+    const user = await getUserAccount(userSub);
+    if (!user || !user.user_id) {
       return {
-        statusCode: 400,
+        statusCode: 403,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           error: {
-            code: 'MISSING_JOB_ID',
-            message: 'job_id is required in the path',
+            code: 'ACCOUNT_NOT_FOUND',
+            message: 'User account not found',
           },
         }),
       };
     }
 
-    logger.info('Getting job details', { jobId, userSub });
+    const userId = user.user_id;
+
+    // Extract path and query parameters
+    const path = event.requestContext?.http?.path || event.path;
+    const pathParams = event.requestContext?.http?.pathParameters || event.pathParameters || {};
+    const queryParams = event.requestContext?.http?.queryStringParameters || event.queryStringParameters || {};
+    const jobId = pathParams.job_id;
+
+    // If no job_id, handle list jobs endpoint
+    if (!jobId) {
+      return await handleListJobs(userId, queryParams);
+    }
+
+    // Handle get single job endpoint
+    logger.info('Getting job details', { jobId, userId, userSub });
 
     // Get job record
     const job = await getJobRecord(jobId);
@@ -63,8 +76,9 @@ async function handler(event) {
       };
     }
 
-    // Verify job belongs to user
-    if (job.user_sub !== userSub) {
+    // Verify job belongs to user (check user_id, fallback to user_sub for migration)
+    const jobUserId = job.user_id || job.user_sub;
+    if (jobUserId !== userId && jobUserId !== userSub) {
       return {
         statusCode: 404,
         headers: { 'Content-Type': 'application/json' },
@@ -111,6 +125,61 @@ async function handler(event) {
     };
   } catch (error) {
     logger.error('Jobs handler error', { error: error.message, stack: error.stack });
+    return InternalServerError.GENERIC(error.message);
+  }
+}
+
+/**
+ * Handle GET /jobs - List jobs for authenticated user
+ */
+async function handleListJobs(userId, queryParams) {
+  try {
+    // Parse query parameters
+    const limit = queryParams.limit ? parseInt(queryParams.limit, 10) : 50;
+    if (isNaN(limit) || limit < 1 || limit > 100) {
+      return BadRequest.INVALID_PARAMETER('limit', 'Must be a number between 1 and 100');
+    }
+
+    const nextToken = queryParams.next_token || null;
+    const status = queryParams.status || null;
+    const jobType = queryParams.job_type || null;
+    const truncated = queryParams.truncated !== undefined ? queryParams.truncated === 'true' : null;
+
+    // Validate status filter
+    if (status && !['queued', 'processing', 'completed', 'failed', 'timeout'].includes(status)) {
+      return BadRequest.INVALID_PARAMETER('status', 'Must be one of: queued, processing, completed, failed, timeout');
+    }
+
+    // Validate job_type filter
+    if (jobType && !['quick', 'long'].includes(jobType)) {
+      return BadRequest.INVALID_PARAMETER('job_type', 'Must be one of: quick, long');
+    }
+
+    // Validate truncated filter
+    if (truncated !== null && typeof truncated !== 'boolean') {
+      return BadRequest.INVALID_PARAMETER('truncated', 'Must be true or false');
+    }
+
+    // List jobs
+    const result = await listJobsByUserId(userId, {
+      limit,
+      nextToken,
+      status,
+      jobType,
+      truncated,
+    });
+
+    return {
+      statusCode: 200,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jobs: result.jobs,
+        next_token: result.nextToken,
+        count: result.count,
+      }),
+    };
+  } catch (error) {
+    logger.error('List jobs handler error', { error: error.message, stack: error.stack, userId });
     return InternalServerError.GENERIC(error.message);
   }
 }

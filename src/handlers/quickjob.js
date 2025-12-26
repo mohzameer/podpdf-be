@@ -70,8 +70,23 @@ async function handler(event) {
       return userError;
     }
 
+    if (!user || !user.user_id) {
+      return {
+        statusCode: 403,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          error: {
+            code: 'ACCOUNT_NOT_FOUND',
+            message: 'User account not found',
+          },
+        }),
+      };
+    }
+
+    const userId = user.user_id;
+
     // Check rate limit
-    const rateLimitCheck = await checkRateLimit(userSub, plan);
+    const rateLimitCheck = await checkRateLimit(userSub, userId, plan);
     if (!rateLimitCheck.allowed) {
       return rateLimitCheck.error;
     }
@@ -88,7 +103,7 @@ async function handler(event) {
     // Create job record with status 'processing'
     await createJobRecord({
       jobId,
-      userSub,
+      userId,
       jobType: 'quick',
       mode: inputType,
       status: 'processing',
@@ -128,20 +143,41 @@ async function handler(event) {
 
         return RequestTimeout.QUICKJOB_TIMEOUT(jobId, QUICKJOB_TIMEOUT_SECONDS);
       }
+      
+      // Check for page limit exceeded error
+      if (error.message && error.message.startsWith('PAGE_LIMIT_EXCEEDED:')) {
+        const [, pageCount, maxPages] = error.message.split(':');
+        await updateJobRecord(jobId, {
+          status: 'failed',
+          error_message: `PDF page count (${pageCount}) exceeds maximum allowed pages (${maxPages})`,
+        });
+
+        await createAnalyticsRecord({
+          jobId,
+          jobType: 'quick',
+          mode: inputType,
+          status: 'failed',
+          jobDuration: Date.now() - startTime,
+        });
+
+        const { BadRequest } = require('../utils/errors');
+        return BadRequest.PAGE_LIMIT_EXCEEDED(parseInt(pageCount, 10), parseInt(maxPages, 10));
+      }
+      
       throw error;
     }
 
-    const { pdf, pages, truncated } = pdfResult;
+    const { pdf, pages } = pdfResult;
 
     // Update job record with completion
     await updateJobRecord(jobId, {
       status: 'completed',
       pages,
-      truncated,
+      truncated: false,
     });
 
-    // Increment PDF count
-    await incrementPdfCount(userSub, user.user_id);
+    // Increment PDF count and track billing
+    await incrementPdfCount(userSub, user.user_id, plan);
 
     // Create analytics record
     await createAnalyticsRecord({
@@ -160,7 +196,6 @@ async function handler(event) {
         'Content-Type': 'application/pdf',
         'Content-Disposition': 'inline; filename="document.pdf"',
         'X-PDF-Pages': pages.toString(),
-        'X-PDF-Truncated': truncated.toString(),
         'X-Job-Id': jobId,
       },
       body: pdf.toString('base64'),

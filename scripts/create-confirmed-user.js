@@ -15,21 +15,16 @@ const { DynamoDBDocumentClient, PutCommand, QueryCommand } = require('@aws-sdk/l
 const { ulid } = require('ulid');
 
 // Configuration - replace these with real values for your environment
-const COGNITO_USER_POOL_ID = 'us-east-1_TEST_POOL_ID';
-const USERS_TABLE = 'podpdf-dev-users-test';
+const COGNITO_USER_POOL_ID = 'eu-central-1_pPRsXjD2S';
+const USERS_TABLE = 'podpdf-dev-users';
 const AWS_REGION = 'eu-central-1';
 
 // Array of users to create
 const USERS = [
   {
-    email: 'user1@example.com',
-    password: 'SecurePass123!',
-    name: 'User One',
-  },
-  {
-    email: 'user2@example.com',
-    password: 'SecurePass123!',
-    name: 'User Two',
+    email: 'zamtest@test.com',
+    password: 'Intel@123',
+    name: 'User Zam',
   },
   // Add more users here as needed
 ];

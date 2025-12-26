@@ -50,8 +50,8 @@ Resources:
           Value: ${self:provider.stage}
         - Key: Service
           Value: podpdf
-      # Note: user_sub is kept as partition key for fast lookups from JWT token
-      # user_id can be stored as an attribute for consistency if needed
+      # Note: user_sub is used as partition key for direct lookups from JWT token
+      # This avoids needing a DynamoDB lookup to get user_id first
   
   JobDetailsTable:
     Type: AWS::DynamoDB::Table
@@ -61,7 +61,7 @@ Resources:
       AttributeDefinitions:
         - AttributeName: job_id
           AttributeType: S
-        - AttributeName: user_sub
+        - AttributeName: user_id
           AttributeType: S
         - AttributeName: created_at
           AttributeType: S
@@ -69,9 +69,9 @@ Resources:
         - AttributeName: job_id
           KeyType: HASH
       GlobalSecondaryIndexes:
-        - IndexName: UserSubCreatedAtIndex
+        - IndexName: UserIdCreatedAtIndex
           KeySchema:
-            - AttributeName: user_sub
+            - AttributeName: user_id
               KeyType: HASH
             - AttributeName: created_at
               KeyType: RANGE
@@ -111,6 +111,29 @@ Resources:
       KeySchema:
         - AttributeName: plan_id
           KeyType: HASH
+      Tags:
+        - Key: Stage
+          Value: ${self:provider.stage}
+        - Key: Service
+          Value: podpdf
+  
+  BillsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: ${self:custom.tableNames.${self:provider.stage}.bills}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: user_id
+          AttributeType: S
+        - AttributeName: billing_month
+          AttributeType: S
+      KeySchema:
+        - AttributeName: user_id
+          KeyType: HASH
+        - AttributeName: billing_month
+          KeyType: RANGE
+      # GSI removed - primary key (user_id + billing_month) can be queried directly
+      # No need for redundant GSI with same structure
       Tags:
         - Key: Stage
           Value: ${self:provider.stage}
@@ -191,6 +214,7 @@ Resources:
         EmailSubject: "Verify your PodPDF account"
         # Cognito requires the placeholder {####}; with CONFIRM_WITH_LINK it becomes a verification link
         EmailMessage: "Please click the link below to verify your email address: {####}"
+      # LambdaConfig is automatically configured by Serverless Framework via cognitoUserPool event
       UserPoolTags:
         Stage: ${self:provider.stage}
         Service: podpdf
@@ -213,6 +237,8 @@ Resources:
       AccessTokenValidity: 24
       IdTokenValidity: 24
       RefreshTokenValidity: 30
+  
+  # Lambda Permission is automatically created by Serverless Framework via cognitoUserPool event
 
 Outputs:
   CognitoUserPoolId:
@@ -256,4 +282,10 @@ Outputs:
     Value: !GetAtt LongJobQueue.Arn
     Export:
       Name: ${self:provider.stage}-LongJobQueueArn
+  
+  BillsTableName:
+    Description: Bills DynamoDB Table Name
+    Value: !Ref BillsTable
+    Export:
+      Name: ${self:provider.stage}-BillsTableName
 

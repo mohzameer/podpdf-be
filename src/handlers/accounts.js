@@ -10,12 +10,8 @@ const { getUserAccount, validateUserAndPlan } = require('../services/business');
 const { generateULID } = require('../utils/ulid');
 const { putItem, updateItem, deleteItem } = require('../services/dynamodb');
 const { validateWebhookUrl } = require('../services/validation');
-const { CognitoIdentityProviderClient, SignUpCommand, GetUserCommand } = require('@aws-sdk/client-cognito-identity-provider');
 
 const USERS_TABLE = process.env.USERS_TABLE;
-const COGNITO_USER_POOL_ID = process.env.COGNITO_USER_POOL_ID;
-const COGNITO_CLIENT_ID = process.env.COGNITO_CLIENT_ID;
-const cognitoClient = new CognitoIdentityProviderClient({ region: process.env.AWS_REGION || 'eu-central-1' });
 
 /**
  * Main handler - routes to appropriate function based on HTTP method and path
@@ -31,10 +27,16 @@ async function handler(event) {
       return await createAccount(event);
     } else if (method === 'GET' && path === '/accounts/me') {
       return await getAccount(event);
+    } else if (method === 'GET' && path === '/accounts/me/billing') {
+      return await getBilling(event);
+    } else if (method === 'GET' && path === '/accounts/me/bills') {
+      return await getBills(event);
     } else if (method === 'DELETE' && path === '/accounts/me') {
       return await deleteAccount(event);
     } else if (method === 'PUT' && path === '/accounts/me/webhook') {
       return await updateWebhook(event);
+    } else if (method === 'PUT' && path === '/accounts/me/upgrade') {
+      return await upgradeToPaidPlan(event);
     }
 
     return {
@@ -49,23 +51,8 @@ async function handler(event) {
 }
 
 /**
- * Get user email from Cognito
- */
-async function getUserEmailFromCognito(userSub) {
-  try {
-    // Note: In a real implementation, you might want to cache this or get it from JWT claims
-    // For now, we'll try to get it from Cognito
-    // However, the email might already be in the JWT claims
-    // This is a placeholder - you may want to extract email from JWT instead
-    return null; // Will be set from JWT or user input
-  } catch (error) {
-    logger.warn('Could not get user email from Cognito', { error: error.message });
-    return null;
-  }
-}
-
-/**
- * POST /accounts - Signup endpoint (creates Cognito user and DynamoDB record)
+ * POST /accounts - Create account record in DynamoDB
+ * Note: Called after user signs up via Amplify. No JWT required.
  */
 async function createAccount(event) {
   try {
@@ -74,12 +61,34 @@ async function createAccount(event) {
     try {
       body = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
     } catch (error) {
-      return BadRequest.MISSING_INPUT_TYPE(); // Reuse error format
+      return {
+        statusCode: 400,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          error: {
+            code: 'INVALID_REQUEST_BODY',
+            message: 'Invalid JSON in request body',
+          },
+        }),
+      };
     }
 
-    const { email, password, name, plan_id } = body;
+    const { user_sub, email, name, plan_id } = body;
 
     // Validate required fields
+    if (!user_sub || typeof user_sub !== 'string' || !user_sub.trim()) {
+      return {
+        statusCode: 400,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          error: {
+            code: 'MISSING_USER_SUB',
+            message: 'user_sub field is required',
+          },
+        }),
+      };
+    }
+
     if (!email || typeof email !== 'string' || !email.trim()) {
       return {
         statusCode: 400,
@@ -93,77 +102,10 @@ async function createAccount(event) {
       };
     }
 
-    if (!password || typeof password !== 'string' || password.length < 8) {
-      return {
-        statusCode: 400,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          error: {
-            code: 'INVALID_PASSWORD',
-            message: 'password field is required and must be at least 8 characters',
-          },
-        }),
-      };
-    }
-
-    // Build user attributes for Cognito
-    const userAttributes = [
-      {
-        Name: 'email',
-        Value: email,
-      },
-    ];
-
-    // Add name if provided
-    if (name && typeof name === 'string' && name.trim()) {
-      userAttributes.push({
-        Name: 'name',
-        Value: name.trim(),
-      });
-    }
-
-    // Sign up user in Cognito
-    let cognitoUserSub;
-    try {
-      const signUpCommand = new SignUpCommand({
-        ClientId: COGNITO_CLIENT_ID,
-        Username: email,
-        Password: password,
-        UserAttributes: userAttributes,
-      });
-
-      const signUpResponse = await cognitoClient.send(signUpCommand);
-      cognitoUserSub = signUpResponse.UserSub;
-
-      logger.info('Cognito user created', { userSub: cognitoUserSub, email });
-    } catch (cognitoError) {
-      logger.error('Cognito signup error', { error: cognitoError.message, email });
-
-      // Handle Cognito errors
-      if (cognitoError.name === 'UsernameExistsException') {
-        return {
-          statusCode: 409,
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            error: {
-              code: 'ACCOUNT_ALREADY_EXISTS',
-              message: 'An account with this email already exists',
-            },
-          }),
-        };
-      }
-
-      return InternalServerError.GENERIC(`Failed to create Cognito user: ${cognitoError.message}`);
-    }
-
-    // Check if DynamoDB record already exists (shouldn't happen, but safety check)
-    const existingUser = await getUserAccount(cognitoUserSub);
+    // Check if account already exists
+    const existingUser = await getUserAccount(user_sub);
     if (existingUser) {
-      logger.warn('DynamoDB record already exists for new Cognito user', {
-        userSub: cognitoUserSub,
-        email,
-      });
-      // Continue anyway - might be a race condition
+      return Forbidden.ACCOUNT_ALREADY_EXISTS();
     }
 
     // Generate user ID (ULID)
@@ -173,8 +115,8 @@ async function createAccount(event) {
     const now = new Date().toISOString();
     const userRecord = {
       user_id: userId,
-      user_sub: cognitoUserSub,
-      email: email,
+      user_sub: user_sub.trim(),
+      email: email.trim(),
       display_name: name && typeof name === 'string' && name.trim() ? name.trim() : null,
       plan_id: plan_id || 'free-basic',
       account_status: 'free',
@@ -184,7 +126,7 @@ async function createAccount(event) {
 
     await putItem(USERS_TABLE, userRecord);
 
-    logger.info('Account created', { userId, userSub: cognitoUserSub, email });
+    logger.info('Account created', { userId, userSub: user_sub, email });
 
     return {
       statusCode: 201,
@@ -196,7 +138,6 @@ async function createAccount(event) {
         plan_id: userRecord.plan_id,
         account_status: userRecord.account_status,
         created_at: userRecord.created_at,
-        message: 'Account created successfully. Please check your email to verify your account, then sign in to get your JWT token.',
       }),
     };
   } catch (error) {
@@ -240,6 +181,7 @@ async function getAccount(event) {
         plan_id: user.plan_id,
         account_status: user.account_status,
         total_pdf_count: user.total_pdf_count || 0,
+        quota_exceeded: user.quota_exceeded || false,
         webhook_url: user.webhook_url || null,
         created_at: user.created_at,
         upgraded_at: user.upgraded_at || null,
@@ -359,6 +301,261 @@ async function updateWebhook(event) {
     };
   } catch (error) {
     logger.error('Error updating webhook', { error: error.message });
+    return InternalServerError.GENERIC(error.message);
+  }
+}
+
+/**
+ * GET /accounts/me/billing - Get monthly billing information
+ */
+async function getBilling(event) {
+  try {
+    const userSub = extractUserSub(event);
+
+    // Get user account
+    const user = await getUserAccount(userSub);
+    if (!user) {
+      return Forbidden.ACCOUNT_NOT_FOUND();
+    }
+
+    // Get plan to check if user is on paid plan
+    const { getPlan } = require('../services/business');
+    const planId = user.plan_id || 'free-basic';
+    const plan = await getPlan(planId);
+
+    const isPaidPlan = plan && plan.type === 'paid';
+
+    // Get current month
+    const now = new Date();
+    const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+
+    // Build billing response
+    const billing = {
+      plan_id: planId,
+      plan_type: plan?.type || 'free',
+      billing_month: currentMonth,
+      monthly_billing_amount: 0,
+      pdf_count: 0, // All-time for free, current month for paid
+      price_per_pdf: plan?.price_per_pdf || 0,
+      is_paid: false,
+    };
+
+    if (isPaidPlan && user.user_id) {
+      // For paid plans: show current month's count and billing
+      try {
+        const { getItem } = require('../services/dynamodb');
+        const BILLS_TABLE = process.env.BILLS_TABLE;
+        const currentBill = await getItem(BILLS_TABLE, {
+          user_id: user.user_id,
+          billing_month: currentMonth,
+        });
+
+        if (currentBill) {
+          billing.monthly_billing_amount = currentBill.monthly_billing_amount || 0;
+          billing.pdf_count = currentBill.monthly_pdf_count || 0; // Current month count
+          billing.is_paid = currentBill.is_paid || false;
+        }
+      } catch (error) {
+        logger.error('Error getting bill from Bills table', {
+          error: error.message,
+          userSub,
+          userId: user.user_id,
+        });
+        // Continue with default values (0)
+      }
+    } else {
+      // For free plans: show all-time count
+      billing.pdf_count = user.total_pdf_count || 0; // All-time count
+    }
+
+    return {
+      statusCode: 200,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        billing,
+      }),
+    };
+  } catch (error) {
+    logger.error('Error getting billing information', {
+      error: error.message,
+      stack: error.stack,
+    });
+    return InternalServerError.GENERIC(error.message);
+  }
+}
+
+/**
+ * GET /accounts/me/bills - Get list of all bills/invoices for the user
+ */
+async function getBills(event) {
+  try {
+    const userSub = extractUserSub(event);
+
+    // Get user account
+    const user = await getUserAccount(userSub);
+    if (!user) {
+      return Forbidden.ACCOUNT_NOT_FOUND();
+    }
+
+    // Get plan to check if user is on paid plan
+    const { getPlan } = require('../services/business');
+    const planId = user.plan_id || 'free-basic';
+    const plan = await getPlan(planId);
+
+    const isPaidPlan = plan && plan.type === 'paid';
+
+    // Build response
+    const response = {
+      plan_id: planId,
+      plan_type: plan?.type || 'free',
+      bills: [],
+    };
+
+    // For paid plans, query all bills from Bills table
+    if (isPaidPlan && user.user_id) {
+      try {
+        const { queryItems } = require('../services/dynamodb');
+        const BILLS_TABLE = process.env.BILLS_TABLE;
+        
+        // Query all bills for this user using primary key (user_id is partition key)
+        const bills = await queryItems(
+          BILLS_TABLE,
+          'user_id = :user_id',
+          { ':user_id': user.user_id },
+          null // No GSI needed - querying primary key directly
+        );
+
+        // Sort bills by billing_month descending (most recent first)
+        const sortedBills = (bills || []).sort((a, b) => {
+          if (a.billing_month > b.billing_month) return -1;
+          if (a.billing_month < b.billing_month) return 1;
+          return 0;
+        });
+
+        // Format bills for response (exclude internal fields)
+        response.bills = sortedBills.map(bill => ({
+          billing_month: bill.billing_month,
+          monthly_pdf_count: bill.monthly_pdf_count || 0,
+          monthly_billing_amount: bill.monthly_billing_amount || 0,
+          is_paid: bill.is_paid || false,
+          bill_id: bill.bill_id || null,
+          invoice_id: bill.invoice_id || null,
+          paid_at: bill.paid_at || null,
+          created_at: bill.created_at,
+          updated_at: bill.updated_at,
+        }));
+      } catch (error) {
+        logger.error('Error getting bills from Bills table', {
+          error: error.message,
+          userSub,
+          userId: user.user_id,
+        });
+        // Continue with empty bills array
+      }
+    }
+
+    return {
+      statusCode: 200,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(response),
+    };
+  } catch (error) {
+    logger.error('Error getting bills list', {
+      error: error.message,
+      stack: error.stack,
+    });
+    return InternalServerError.GENERIC(error.message);
+  }
+}
+
+/**
+ * PUT /accounts/me/upgrade - Upgrade user to paid plan
+ */
+async function upgradeToPaidPlan(event) {
+  try {
+    const userSub = extractUserSub(event);
+
+    // Get user account
+    const user = await getUserAccount(userSub);
+    if (!user) {
+      return Forbidden.ACCOUNT_NOT_FOUND();
+    }
+
+    // Parse request body
+    let body;
+    try {
+      body = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
+    } catch (error) {
+      return BadRequest.INVALID_PLAN_ID('missing');
+    }
+
+    // Validate plan_id is provided
+    const { plan_id } = body;
+    if (!plan_id || typeof plan_id !== 'string') {
+      return BadRequest.INVALID_PLAN_ID(plan_id || 'missing');
+    }
+
+    // Get plan configuration
+    const { getPlan } = require('../services/business');
+    const plan = await getPlan(plan_id);
+
+    if (!plan) {
+      return BadRequest.INVALID_PLAN_ID(plan_id);
+    }
+
+    // Validate plan is a paid plan
+    if (plan.type !== 'paid') {
+      return BadRequest.INVALID_PLAN_ID(plan_id, 'Plan must be a paid plan');
+    }
+
+    // Validate plan is active
+    if (!plan.is_active) {
+      return BadRequest.INVALID_PLAN_ID(plan_id, 'Plan is not active');
+    }
+
+    // Update user to paid plan
+    const nowISO = new Date().toISOString();
+    try {
+      await updateItem(
+        USERS_TABLE,
+        { user_id: user.user_id },
+        'SET plan_id = :plan_id, account_status = :status, quota_exceeded = :false, upgraded_at = :upgraded_at',
+        {
+          ':plan_id': plan_id,
+          ':status': 'paid',
+          ':false': false,
+          ':upgraded_at': nowISO,
+        }
+      );
+    } catch (error) {
+      logger.error('Error upgrading user to paid plan', {
+        error: error.message,
+        userSub,
+        userId: user.user_id,
+        planId: plan_id,
+      });
+      return InternalServerError.GENERIC('Failed to upgrade account');
+    }
+
+    return {
+      statusCode: 200,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message: 'Account upgraded successfully',
+        plan: {
+          plan_id: plan.plan_id,
+          name: plan.name,
+          type: plan.type,
+          price_per_pdf: plan.price_per_pdf,
+        },
+        upgraded_at: nowISO,
+      }),
+    };
+  } catch (error) {
+    logger.error('Error upgrading account', {
+      error: error.message,
+      stack: error.stack,
+    });
     return InternalServerError.GENERIC(error.message);
   }
 }

@@ -16,7 +16,7 @@ provider:
     LOG_LEVEL: ${self:custom.stages.${self:provider.stage}.logLevel}
     FREE_TIER_QUOTA: 100
     RATE_LIMIT_PER_MINUTE: 20
-    MAX_PAGES: 100
+    MAX_PAGES: ${self:custom.stages.${self:provider.stage}.maxPages}
     MAX_INPUT_SIZE_MB: 5
     QUICKJOB_TIMEOUT_SECONDS: 30
     USERS_TABLE: ${self:custom.tableNames.${self:provider.stage}.users}
@@ -24,10 +24,10 @@ provider:
     JOB_DETAILS_TABLE: ${self:custom.tableNames.${self:provider.stage}.jobDetails}
     ANALYTICS_TABLE: ${self:custom.tableNames.${self:provider.stage}.analytics}
     PLANS_TABLE: ${self:custom.tableNames.${self:provider.stage}.plans}
+    BILLS_TABLE: ${self:custom.tableNames.${self:provider.stage}.bills}
     PDFS_BUCKET: podpdf-${self:provider.stage}-pdfs
     LONGJOB_QUEUE_URL: !Ref LongJobQueue
-    COGNITO_USER_POOL_ID: !Ref CognitoUserPool
-    COGNITO_CLIENT_ID: !Ref CognitoUserPoolClient
+    COGNITO_USER_POOL_CLIENT_ID: !Ref CognitoUserPoolClient
   
   httpApi:
     cors:
@@ -78,13 +78,14 @@ provider:
             - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.jobDetails}
             - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.analytics}
             - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.plans}
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.bills}
             - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.users}/index/*
             - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.jobDetails}/index/*
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.bills}/index/*
         - Effect: Allow
           Action:
             - cognito-idp:GetUser
-            - cognito-idp:SignUp
-            - cognito-idp:AdminGetUser
+            - cognito-idp:InitiateAuth
           Resource:
             - arn:aws:cognito-idp:${self:provider.region}:*:userpool/*
         - Effect: Allow
@@ -155,10 +156,22 @@ functions:
       - httpApi:
           path: /accounts
           method: post
-          # No authorizer - this is the signup endpoint
+          # No authorizer - called after Amplify signup
       - httpApi:
           path: /accounts/me
           method: get
+          authorizer: cognitoAuthorizer
+      - httpApi:
+          path: /accounts/me/billing
+          method: get
+          authorizer: cognitoAuthorizer
+      - httpApi:
+          path: /accounts/me/bills
+          method: get
+          authorizer: cognitoAuthorizer
+      - httpApi:
+          path: /accounts/me/upgrade
+          method: put
           authorizer: cognitoAuthorizer
       - httpApi:
           path: /accounts/me
@@ -175,16 +188,39 @@ functions:
       - httpApi:
           path: /health
           method: get
+  
+  signin:
+    handler: src/handlers/signin.handler
+    events: ${self:custom.stages.${self:provider.stage}.signinEvents}
+    environment:
+      COGNITO_USER_POOL_CLIENT_ID: !Ref CognitoUserPoolClient
+  
+  cognito-post-confirmation:
+    handler: src/handlers/cognito-post-confirmation.handler
+    events:
+      - cognitoUserPool:
+          pool: CognitoUserPool
+          trigger: PostConfirmation
+    environment:
+      USERS_TABLE: ${self:custom.tableNames.${self:provider.stage}.users}
 
 custom:
   stages:
     dev:
       logLevel: debug
+      maxPages: 2
+      signinEvents:
+        - httpApi:
+            path: /signin
+            method: post
+            # No authorizer - public endpoint for testing
       cors:
         allowedOrigins:
           - '*'
     prod:
       logLevel: info
+      maxPages: 100
+      signinEvents: []
       cors:
         allowedOrigins:
           - https://yourdomain.com
@@ -198,11 +234,13 @@ custom:
       jobDetails: podpdf-dev-job-details
       analytics: podpdf-dev-analytics
       plans: podpdf-dev-plans
+      bills: podpdf-dev-bills
     prod:
       users: podpdf-prod-users
       userRateLimits: podpdf-prod-user-rate-limits
       jobDetails: podpdf-prod-job-details
       analytics: podpdf-prod-analytics
       plans: podpdf-prod-plans
+      bills: podpdf-prod-bills
 
 resources: ${file(resources.yml)}

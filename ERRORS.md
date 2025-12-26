@@ -64,6 +64,28 @@ This document lists all error codes returned by the PodPDF API, their HTTP statu
 - **When:** Free tier user has reached the all-time quota of 100 PDFs and must upgrade to a paid plan.
 - **Notes:** Returned by Lambda.
 
+**Example Response:**
+```json
+{
+  "error": {
+    "code": "QUOTA_EXCEEDED",
+    "message": "All-time quota of 100 PDFs has been reached. Please upgrade to a paid plan to continue using the service.",
+    "details": {
+      "current_usage": 100,
+      "quota": 100,
+      "quota_exceeded": true,
+      "action_required": "upgrade_to_paid_plan"
+    }
+  }
+}
+```
+
+**Fields:**
+- `current_usage` (number): Current all-time PDF count for the user.
+- `quota` (number): Quota limit (100 for free tier).
+- `quota_exceeded` (boolean): Always `true` when this error is returned. Indicates the user has exceeded their quota.
+- `action_required` (string): Action the user must take (`"upgrade_to_paid_plan"`).
+
 ---
 
 ### 4. Throttling Errors (Upstream)
@@ -100,6 +122,7 @@ This document lists all error codes returned by the PodPDF API, their HTTP statu
 | `WRONG_FIELD_PROVIDED` | 400        | Validation                  | Wrong content field for given `input_type`                   |
 | `CONTENT_TYPE_MISMATCH`| 400        | Validation                  | Content does not match declared `input_type`                 |
 | `INPUT_SIZE_EXCEEDED`  | 400        | Validation                  | Input exceeds maximum allowed size                           |
+| `PAGE_LIMIT_EXCEEDED`  | 400        | Validation                  | PDF page count exceeds maximum allowed pages                 |
 | `UNAUTHORIZED`         | 401        | Authentication              | Missing/invalid JWT                                          |
 | `ACCOUNT_NOT_FOUND`    | 403        | Account                     | User account not found                                       |
 | `RATE_LIMIT_EXCEEDED`  | 403        | Rate limiting (per-user)    | Free tier per-user rate limit exceeded                       |

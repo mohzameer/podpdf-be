@@ -143,17 +143,19 @@ Client → API Gateway → Lambda (longjob) → SQS Queue
      - `plan_id` (String) - ID of the plan this user is on (e.g., `"free-basic"`, `"paid-standard"`)
      - `account_status` (String) - `"free"`, `"paid"`, or `"cancelled"` (defaults to `"free"` on account creation)
      - `total_pdf_count` (Number) - All-time PDF count for the user
+     - `quota_exceeded` (Boolean) - `true` if free tier user has exceeded their plan's quota limit (from `plan.monthly_quota`), `false` otherwise (defaults to `false`)
      - `webhook_url` (String, optional) - User's default webhook URL for long job notifications
      - `created_at` (String, ISO 8601 timestamp) - Account creation timestamp
      - `upgraded_at` (String, ISO 8601 timestamp, optional) - Timestamp when user upgraded to paid plan
    - **TTL:** Not applicable (permanent storage for user records)
 
 2. **UserRateLimits**
-   - **Partition Key:** `user_sub` (Cognito user identifier - for fast lookups from JWT token)
+   - **Partition Key:** `user_id` (String, ULID) - User identifier (reference to Users table)
    - **Sort Key:** `minute_timestamp` (format: YYYY-MM-DD-HH-MM)
+   - **Global Secondary Index:** `UserSubMinuteTimestampIndex` on `user_sub` and `minute_timestamp` (for lookups by Cognito user_sub)
    - **Attributes:**
-     - `user_sub` (String) - Cognito user identifier (partition key)
-     - `user_id` (String, optional) - ULID user identifier (for consistency with Users table)
+     - `user_id` (String, ULID) - User identifier (partition key)
+     - `user_sub` (String) - Cognito user identifier (for GSI lookups)
      - `minute_timestamp` (String) - Timestamp in format YYYY-MM-DD-HH-MM (sort key)
      - `request_count` (Number, atomic counter) - Number of requests in this minute window
      - `ttl` (Number, expires after 1 hour) - Time-to-live for automatic cleanup
@@ -161,7 +163,7 @@ Client → API Gateway → Lambda (longjob) → SQS Queue
 3. **JobDetails**
    - **Partition Key:** `job_id` (UUID, generated per PDF generation request)
    - **Attributes:**
-     - `user_sub` (String) - User identifier from Cognito
+     - `user_id` (String, ULID) - User identifier (reference to Users table)
      - `status` (String) - Job status: `"queued"`, `"processing"`, `"completed"`, `"failed"`, or `"timeout"` (for quick jobs)
      - `job_type` (String, **required**) - `"quick"` or `"long"` - Distinguishes between synchronous quick jobs and asynchronous long jobs
      - `mode` (String) - Input mode: `"html"` or `"markdown"`
@@ -212,6 +214,25 @@ Client → API Gateway → Lambda (longjob) → SQS Queue
      - `description` (String, optional) - Description of the plan
      - `is_active` (Boolean) - Indicates if plan is active and available for assignment
    - **TTL:** Not applicable (plan configurations are long-lived)
+
+6. **Bills**
+   - **Partition Key:** `user_id` (String, ULID) - User identifier
+   - **Sort Key:** `billing_month` (String) - Billing month in `YYYY-MM` format (e.g., `"2025-12"`)
+   - **Attributes:**
+     - `user_id` (String, ULID) - User identifier (partition key)
+     - `billing_month` (String) - Billing month in `YYYY-MM` format (sort key)
+     - `monthly_pdf_count` (Number) - Number of PDFs generated in this month
+     - `monthly_billing_amount` (Number) - Total amount accumulated for this month in USD
+     - `is_paid` (Boolean) - Whether the bill has been paid (defaults to `false`)
+     - `bill_id` (String, optional) - External bill/invoice ID (for future integration with payment processors like Paddle)
+     - `invoice_id` (String, optional) - Invoice ID from payment processor
+     - `paddle_subscription_id` (String, optional) - Paddle subscription ID (for future integration)
+     - `paddle_transaction_id` (String, optional) - Paddle transaction ID (for future integration)
+     - `paid_at` (String, optional) - ISO 8601 timestamp when bill was marked as paid
+     - `created_at` (String, ISO 8601 timestamp) - Bill record creation timestamp
+     - `updated_at` (String, ISO 8601 timestamp) - Last update timestamp
+   - **Global Secondary Index:** `UserIdBillingMonthIndex` on `user_id` and `billing_month` (for lookups by user_id)
+   - **TTL:** Not applicable (bills are permanent records for invoicing and accounting)
 
 ### Amazon S3
 
@@ -295,7 +316,7 @@ Client → API Gateway → Lambda (longjob) → SQS Queue
    - Reads user plan from DynamoDB
    - Validates request body (same validation as described in API Specification)
    - Enforces per-user rate limit for free tier users only (20 requests/minute)
-   - Checks all-time quota for free tier users (100 PDFs)
+   - Checks all-time quota for free tier users (quota limit from `plan.monthly_quota` in `Plans` table)
    - Validates input size limits (~5 MB maximum)
 
    **Processing Phase (if checks pass):**
@@ -673,11 +694,12 @@ All options are passed directly to Puppeteer's `page.pdf()` method. Common optio
 
 ### Free Tier
 
-- **Allowance:** 100 PDFs (all-time quota, not monthly)
+- **Allowance:** Configurable per plan via `monthly_quota` in `Plans` table (default: 100 PDFs from `FREE_TIER_QUOTA` environment variable)
 - **Tracking:** DynamoDB `Users` table
-- **No Reset:** Quota is cumulative and does not reset
-- **Enforcement:** Checked on every request
-- **After 100 PDFs:** User must upgrade to paid plan to continue using the service
+- **No Reset:** Quota is cumulative and does not reset (all-time quota, not monthly)
+- **Enforcement:** Checked on every request using `plan.monthly_quota` from `Plans` table
+- **After Quota Exceeded:** User must upgrade to paid plan to continue using the service
+- **Quota Source:** Quota is read from the plan's `monthly_quota` field in the `Plans` table. If `monthly_quota` is not set for a free plan, it falls back to the `FREE_TIER_QUOTA` environment variable (default: 100)
 
 ### Paid Plan
 
@@ -685,7 +707,11 @@ All options are passed directly to Puppeteer's `page.pdf()` method. Common optio
 - **PDF Limit:** Unlimited PDFs (no quota limit)
 - **Price:** $0.005 per PDF
 - **Billing:** Usage tracked per PDF and invoiced monthly
-- **Tracking:** DynamoDB `Users` table maintains accurate PDF counts for monthly invoicing
+- **Tracking:** 
+  - All-time PDF count maintained in `Users` table
+  - Monthly billing records stored in `Bills` table (one record per user per month)
+  - Each bill record tracks `monthly_pdf_count`, `monthly_billing_amount`, and `is_paid` status
+  - Future payment processor integration fields (bill_id, invoice_id, paddle_subscription_id, etc.) can be added to bill records
 - **Rate Limits:** Unlimited per-user rate (only limited by API Gateway throttling)
 
 ### Implementation Details
@@ -698,12 +724,15 @@ All options are passed directly to Puppeteer's `page.pdf()` method. Common optio
    - Looks up plan configuration from `Plans` table using `plan_id`
    - For free tier users:
      - Reads total all-time usage from DynamoDB
-     - Compares against quota (100 PDFs)
+     - Gets quota limit from `plan.monthly_quota` in `Plans` table (falls back to `FREE_TIER_QUOTA` env var if not set)
+     - Compares usage against quota limit
      - Increments counter atomically if within limits
      - Rejects with 403 if quota exceeded
+     - Sets `quota_exceeded` flag in `Users` table when quota is exceeded
    - For paid plan users:
      - No quota check (unlimited PDFs by default)
-     - Increments PDF count for monthly invoicing
+     - Increments PDF count in `Users` table (all-time total)
+     - Creates or updates bill record in `Bills` table for current month
      - All PDFs are billed according to `price_per_pdf` from `Plans` table
 
 2. Account & Plan Management:
@@ -714,10 +743,15 @@ All options are passed directly to Puppeteer's `page.pdf()` method. Common optio
    - Plan upgrade updates `plan_id`, `account_status`, and `upgraded_at` timestamp
 
 3. Quota Tracking:
-   - Single record per user tracks PDF count and plan
-   - Free tier: Tracks all-time count (stops at 100, requires upgrade)
-   - Paid plan: Tracks monthly count for invoicing (unlimited)
+   - Single record per user tracks PDF count and plan in `Users` table
+   - Free tier: Tracks all-time count (stops at plan's `monthly_quota` limit, requires upgrade)
+   - Quota limit is read from `plan.monthly_quota` in `Plans` table (configurable per plan)
+   - If `plan.monthly_quota` is not set, falls back to `FREE_TIER_QUOTA` environment variable (default: 100)
+   - Paid plan: Tracks all-time count in `Users` table (unlimited)
+   - Monthly billing tracked separately in `Bills` table (one record per user per month)
    - Counter increments with each successful PDF generation (both quick and long jobs)
+   - Bill records are created/updated automatically for paid users
+   - `quota_exceeded` flag in `Users` table indicates when free tier quota has been exceeded
 
 ---
 

@@ -1,0 +1,21 @@
+{
+  "free-basic": {
+    "plan_id": {"S": "free-basic"},
+    "name": {"S": "Free Basic"},
+    "type": {"S": "free"},
+    "monthly_quota": {"N": "100"},
+    "price_per_pdf": {"N": "0"},
+    "rate_limit_per_minute": {"N": "20"},
+    "description": {"S": "Free tier with 100 PDFs all-time quota (not monthly - cumulative, does not reset). Rate limit: 20 requests per minute."},
+    "is_active": {"BOOL": true}
+  },
+  "paid-standard": {
+    "plan_id": {"S": "paid-standard"},
+    "name": {"S": "Paid Standard"},
+    "type": {"S": "paid"},
+    "price_per_pdf": {"N": "0.005"},
+    "description": {"S": "Paid plan with unlimited PDFs. Price: $0.005 per PDF. Unlimited rate limit."},
+    "is_active": {"BOOL": true}
+  }
+}
+

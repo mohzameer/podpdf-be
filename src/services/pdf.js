@@ -62,13 +62,71 @@ function countPages(pdfBuffer) {
  * Truncate PDF to first N pages
  * @param {Buffer} pdfBuffer - Original PDF buffer
  * @param {number} maxPages - Maximum number of pages to keep
- * @returns {Buffer} Truncated PDF buffer
+ * @returns {Promise<Buffer>} Truncated PDF buffer
  */
 async function truncatePdf(pdfBuffer, maxPages) {
-  // Note: PDF truncation is complex. For now, we'll regenerate with page limit
-  // This function is a placeholder - actual truncation happens during generation
-  // by limiting the content rendered
-  return pdfBuffer;
+  try {
+    const { PDFDocument } = require('pdf-lib');
+    
+    // Load the PDF document
+    const pdfDoc = await PDFDocument.load(pdfBuffer);
+    const totalPages = pdfDoc.getPageCount();
+    
+    // If already within limit, return original
+    if (totalPages <= maxPages) {
+      return pdfBuffer;
+    }
+    
+    // Create a new PDF with only the first N complete pages
+    // copyPages ensures we only copy complete pages, not partial content
+    // IMPORTANT: We do NOT add any labels, text, or indicators to the PDF
+    // The truncated PDF contains only the original content from the first N pages
+    const newPdfDoc = await PDFDocument.create();
+    
+    // Copy only the first maxPages complete pages (0-indexed, so 0 to maxPages-1)
+    // This copies pages as-is without any modifications or added text
+    const pageIndices = Array.from({ length: maxPages }, (_, i) => i);
+    const pages = await newPdfDoc.copyPages(pdfDoc, pageIndices);
+    
+    // Add complete pages to new document in order
+    // No text, labels, or truncation indicators are added to the pages
+    pages.forEach((page) => {
+      newPdfDoc.addPage(page);
+    });
+    
+    // Serialize the truncated PDF (contains only complete pages, no labels)
+    const truncatedPdfBytes = await newPdfDoc.save();
+    const truncatedBuffer = Buffer.from(truncatedPdfBytes);
+    
+    // Verify the truncated PDF has the correct number of pages
+    const verificationDoc = await PDFDocument.load(truncatedBuffer);
+    const verifiedPageCount = verificationDoc.getPageCount();
+    
+    if (verifiedPageCount !== maxPages) {
+      logger.warn('Page count mismatch after truncation', {
+        expected: maxPages,
+        actual: verifiedPageCount,
+      });
+    }
+    
+    logger.info('PDF truncation completed successfully', {
+      originalPages: totalPages,
+      truncatedPages: verifiedPageCount,
+      originalSize: pdfBuffer.length,
+      truncatedSize: truncatedBuffer.length,
+    });
+    
+    return truncatedBuffer;
+  } catch (error) {
+    logger.error('PDF truncation error', {
+      error: error.message,
+      stack: error.stack,
+      maxPages,
+    });
+    // If truncation fails, return original (fail open)
+    logger.warn('Returning original PDF due to truncation error');
+    return pdfBuffer;
+  }
 }
 
 /**
@@ -119,7 +177,6 @@ ${htmlContent}
     }
 
     // Configure Chromium for Lambda
-    chromium.setGraphicsMode(false);
     const executablePath = await chromium.executablePath();
 
     // Launch browser
@@ -152,29 +209,23 @@ ${htmlContent}
 
     // Count pages
     let pageCount = countPages(pdfBuffer);
-    let truncated = false;
 
-    // If PDF exceeds max pages, we need to regenerate with page limit
-    // Note: Puppeteer doesn't directly support page limits, so we'll
-    // need to handle this by checking and potentially regenerating
-    // For now, we'll check the count and log a warning
-    if (pageCount > MAX_PAGES) {
+    // Check if page count exceeds limit - reject instead of truncating
+    // Allow MAX_PAGES + 1 to account for page division being slightly underestimated
+    const effectiveMaxPages = MAX_PAGES + 1;
+    if (pageCount > effectiveMaxPages) {
       logger.warn('PDF exceeds page limit', {
         pageCount,
         maxPages: MAX_PAGES,
+        effectiveMaxPages,
       });
-      // In a production system, you might want to regenerate with content limits
-      // For now, we'll mark as truncated and return the full PDF
-      // (The handler will need to handle actual truncation if needed)
-      truncated = true;
-      pageCount = MAX_PAGES; // Report as max pages
+      throw new Error(`PAGE_LIMIT_EXCEEDED:${pageCount}:${MAX_PAGES}`);
     }
 
     const duration = Date.now() - startTime;
     logger.info('PDF generated successfully', {
       inputType,
       pages: pageCount,
-      truncated,
       duration_ms: duration,
       pdf_size_bytes: pdfBuffer.length,
     });
@@ -182,7 +233,7 @@ ${htmlContent}
     return {
       pdf: pdfBuffer,
       pages: pageCount,
-      truncated,
+      truncated: false,
     };
   } catch (error) {
     logger.error('PDF generation error', {

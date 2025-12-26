@@ -4,6 +4,8 @@ This document describes the public HTTP endpoints exposed by the PodPDF API.
 
 All endpoints are served via **Amazon API Gateway HTTP API (v2)** and backed by Lambda functions.
 
+**Note:** User account creation is handled automatically via a **Cognito Post Confirmation Lambda trigger**. When a user signs up via Amplify and confirms their email, the account record is automatically created in DynamoDB. The `POST /accounts` endpoint is available as a fallback for manual account creation if needed.
+
 ---
 
 ## 1. `POST /quickjob`
@@ -104,9 +106,10 @@ Authorization: Bearer <jwt_token>
 4. **Business Logic**
    - Free tier:
      - Per-user rate limit: 20 req/min (**403** `RATE_LIMIT_EXCEEDED` on breach).
-     - All-time quota: 100 PDFs (**403** `QUOTA_EXCEEDED` after that; must upgrade).
+     - All-time quota: Configurable per plan via `monthly_quota` in `Plans` table (default: 100 PDFs from `FREE_TIER_QUOTA` environment variable) (**403** `QUOTA_EXCEEDED` after that; must upgrade).
    - Paid plan:
      - No quota; still subject to API Gateway throttling.
+   - **Page Limit:** Maximum page limit is enforced per environment (e.g., 2 pages in dev, 100 pages in prod). If the generated PDF exceeds this limit, the request is rejected with **400** `PAGE_LIMIT_EXCEEDED` error. No truncation is performed.
 
 ### 1.4 Response
 
@@ -119,16 +122,15 @@ Authorization: Bearer <jwt_token>
 Content-Type: application/pdf
 Content-Disposition: inline; filename="document.pdf"
 X-PDF-Pages: 42
-X-PDF-Truncated: false
 X-Job-Id: 9f0a4b78-2c0c-4d14-9b8b-123456789abc
 ```
 
-- **Body:** Binary PDF content (up to 100 pages; truncated if more).
+- **Body:** Binary PDF content (up to maximum allowed pages per environment).
 
 **Notes:**
-- If the rendered PDF exceeds 100 pages, it is automatically truncated to the first 100 pages:
-  - `X-PDF-Pages: 100`
-  - `X-PDF-Truncated: true`
+- Maximum page limit is enforced per environment (e.g., 2 pages in dev, 100 pages in prod).
+- If the rendered PDF exceeds the maximum page limit, the request is rejected with a `400 Bad Request` error (`PAGE_LIMIT_EXCEEDED`).
+- No truncation is performed - the entire request is rejected if the limit is exceeded.
 
 #### 1.4.2 Timeout Response
 
@@ -161,6 +163,7 @@ Common error statuses:
   - Wrong content field for given `input_type`
   - Content type mismatch
   - Input size exceeds limit
+  - PDF page count exceeds maximum allowed pages (`PAGE_LIMIT_EXCEEDED`)
 
 - `401 Unauthorized`
   - Missing or invalid JWT
@@ -267,6 +270,8 @@ Authorization: Bearer <jwt_token>
 ### 2.3 Validation Rules (Summary)
 
 Same validation as `/quickjob` (authentication, account, body, business logic), plus:
+
+- **Page Limit Check:** The PDF is generated synchronously before queuing to validate the page count. If the page limit is exceeded, the request is rejected immediately with `400 Bad Request` (`PAGE_LIMIT_EXCEEDED`). The job is only queued if the page limit check passes.
 - `webhook_url` (if provided) must be a valid HTTPS URL.
 
 ### 2.4 Response
@@ -296,8 +301,9 @@ Same validation as `/quickjob` (authentication, account, body, business logic), 
 
 Same error responses as `/quickjob` (400, 401, 403, 429, 500), plus:
 - `400 Bad Request` – Invalid `webhook_url` (not HTTPS or malformed URL).
+- `400 Bad Request` – PDF page count exceeds maximum allowed pages (`PAGE_LIMIT_EXCEEDED`). **This error is returned immediately before queuing the job.** No job record is created and no webhook will be sent.
 
-**Note:** After job is queued, processing happens asynchronously. Use `GET /jobs/{job_id}` to check status, or wait for webhook notification.
+**Note:** The page limit is checked synchronously before queuing. If the limit is exceeded, the error is returned immediately in the initial response. If the check passes, the job is queued and processing happens asynchronously. Use `GET /jobs/{job_id}` to check status, or wait for webhook notification.
 
 ---
 
@@ -375,7 +381,7 @@ Authorization: Bearer <jwt_token>
   "job_type": "long",
   "mode": "html",
   "pages": 150,
-  "truncated": true,
+  "truncated": false,
   "created_at": "2025-12-21T10:30:00Z",
   "completed_at": "2025-12-21T10:32:15Z",
   "s3_url": "https://s3.amazonaws.com/podpdf-dev-pdfs/8e1b5c89-3d1d-5e25-ac9c-234567890def.pdf?X-Amz-Signature=...",
@@ -407,7 +413,7 @@ Authorization: Bearer <jwt_token>
 - `job_type` (string): `"quick"` or `"long"`.
 - `mode` (string): `"html"` or `"markdown"`.
 - `pages` (number, optional): Number of pages in the returned PDF (present when completed).
-- `truncated` (boolean, optional): `true` if PDF was truncated to 100 pages.
+- `truncated` (boolean, optional): Always `false` (truncation is no longer performed; requests exceeding page limit are rejected).
 - `created_at` (string): ISO 8601 timestamp.
 - `completed_at` (string, optional): ISO 8601 timestamp (present when job completes or fails).
 - `s3_url` (string, optional): Signed URL for S3 object (long jobs only, 1-hour expiry).
@@ -454,7 +460,7 @@ Authorization: Bearer <jwt_token>
 - `next_token` (string, optional): Pagination token from previous response.
 - `status` (string, optional): Filter by status. Values: `"queued"`, `"processing"`, `"completed"`, `"failed"`, `"timeout"`, or omit for all.
 - `job_type` (string, optional): Filter by job type. Values: `"quick"`, `"long"`, or omit for all.
-- `truncated` (boolean, optional): Filter by truncation status. `true` to show only truncated jobs, `false` for non-truncated, omit for all.
+- `truncated` (boolean, optional): Filter by truncation status. Note: Truncation is no longer performed; this field is kept for backward compatibility and will always be `false` for new jobs. `true` to show only jobs with `truncated: true` (legacy), `false` for non-truncated, omit for all.
 
 ### 4.3 Response
 
@@ -483,7 +489,7 @@ Authorization: Bearer <jwt_token>
       "job_type": "long",
       "mode": "markdown",
       "pages": 100,
-      "truncated": true,
+      "truncated": false,
       "created_at": "2025-12-21T09:15:00Z",
       "completed_at": "2025-12-21T09:15:12Z",
       "s3_url": "https://s3.amazonaws.com/...?X-Amz-Signature=...",
@@ -511,23 +517,26 @@ Authorization: Bearer <jwt_token>
 
 ---
 
-## 5. `POST /accounts`
+## 5. `POST /accounts` (Legacy/Manual - Optional)
 
 **Description:**  
-Create a new user account in the system.
+⚠️ **Note:** This endpoint is now optional. Account creation is **automatically handled** by the Cognito Post Confirmation Lambda trigger when a user confirms their email.
+
+**Automatic Account Creation (Recommended):**
+- When a user signs up via Amplify and confirms their email, Cognito automatically invokes a Lambda function
+- The Lambda function creates the DynamoDB account record automatically
+- No frontend call needed
+
+**Manual Account Creation (Fallback):**
+- If automatic creation fails or you need manual control, you can call this endpoint
+- This endpoint creates a new user account record in DynamoDB manually
+
+**Note:** User signup (Cognito user creation) is handled by the frontend using AWS Amplify. Account record creation happens automatically via Lambda trigger after email confirmation.
 
 ### 5.1 Authentication
 
-- **Type:** JWT Bearer Token (Amazon Cognito)
-- **Header:**
-
-```http
-Authorization: Bearer <jwt_token>
-```
-
-**Requirements:**
-- Token must be valid and not expired.
-- Account must not already exist in `Users`.
+- **Type:** None (public endpoint)
+- **Note:** This endpoint does not require authentication. It is typically not needed since account creation is automatic.
 
 ### 5.2 HTTP Request
 
@@ -539,12 +548,18 @@ Authorization: Bearer <jwt_token>
 
 ```json
 {
+  "user_sub": "12345678-1234-1234-1234-123456789012",
+  "email": "user@example.com",
+  "name": "John Doe",
   "plan_id": "free-basic"
 }
 ```
 
 **Fields:**
-- `plan_id` (string, optional): Plan ID to assign. Defaults to the default free plan if not provided.
+- `user_sub` (string, required): Cognito user identifier (sub claim from JWT token). This is obtained from Amplify after signup.
+- `email` (string, required): User's email address.
+- `name` (string, optional): User's display name.
+- `plan_id` (string, optional): Plan ID to assign. Defaults to `"free-basic"` if not provided.
 
 ### 5.3 Response
 
@@ -557,23 +572,122 @@ Authorization: Bearer <jwt_token>
 ```json
 {
   "user_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-  "user_sub": "12345678-1234-1234-1234-123456789012",
   "email": "user@example.com",
   "display_name": "John Doe",
   "plan_id": "free-basic",
   "account_status": "free",
-  "total_pdf_count": 0,
-  "webhook_url": null,
   "created_at": "2025-12-21T10:00:00Z"
 }
 ```
 
+**Fields:**
+- `user_id` (string): ULID-based primary identifier for the user.
+- `email` (string): User's email address (from JWT claims or request body).
+- `display_name` (string, optional): User's display name.
+- `plan_id` (string): Plan ID assigned to the user.
+- `account_status` (string): Account status (`"free"`, `"paid"`, or `"cancelled"`).
+- `created_at` (string): ISO 8601 timestamp when account was created.
+
 #### 5.3.2 Error Responses
 
-- `400 Bad Request` – Invalid `plan_id` or account already exists.
-- `401 Unauthorized` – Missing or invalid JWT.
-- `409 Conflict` – Account already exists (`ACCOUNT_ALREADY_EXISTS`).
-- `500 Internal Server Error` – Server-side failure.
+All error responses follow the standard error format:
+
+```json
+{
+  "error": {
+    "code": "ERROR_CODE",
+    "message": "Human readable error message",
+    "details": {}
+  }
+}
+```
+
+**Error Codes:**
+
+- **`400 Bad Request`** – Missing required fields.
+  ```json
+  {
+    "error": {
+      "code": "MISSING_USER_SUB",
+      "message": "user_sub field is required"
+    }
+  }
+  ```
+  
+  Or:
+  ```json
+  {
+    "error": {
+      "code": "MISSING_EMAIL",
+      "message": "email field is required"
+    }
+  }
+  ```
+
+- **`409 Conflict`** – Account already exists.
+  ```json
+  {
+    "error": {
+      "code": "ACCOUNT_ALREADY_EXISTS",
+      "message": "Account already exists for this user",
+      "details": {
+        "action_required": "use_existing_account"
+      }
+    }
+  }
+  ```
+
+- **`500 Internal Server Error`** – Server-side failure.
+  ```json
+  {
+    "error": {
+      "code": "INTERNAL_SERVER_ERROR",
+      "message": "Internal server error"
+    }
+  }
+  ```
+
+### 5.4 Sample Request
+
+```bash
+curl -X POST https://api.example.com/accounts \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user_sub": "12345678-1234-1234-1234-123456789012",
+    "email": "user@example.com",
+    "name": "John Doe",
+    "plan_id": "free-basic"
+  }'
+```
+
+**Note:** The `user_sub` and `email` are typically obtained from the Amplify Auth response after signup. The frontend should extract these values and include them in the request.
+
+### 5.5 Sample Response
+
+**Success (201 Created):**
+```json
+{
+  "user_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+  "email": "user@example.com",
+  "display_name": "John Doe",
+  "plan_id": "free-basic",
+  "account_status": "free",
+  "created_at": "2025-12-21T10:00:00Z"
+}
+```
+
+**Error - Account Already Exists (409 Conflict):**
+```json
+{
+  "error": {
+    "code": "ACCOUNT_ALREADY_EXISTS",
+    "message": "Account already exists for this user",
+    "details": {
+      "action_required": "use_existing_account"
+    }
+  }
+}
+```
 
 ---
 
@@ -617,6 +731,7 @@ Authorization: Bearer <jwt_token>
   "plan_id": "free-basic",
   "account_status": "free",
   "total_pdf_count": 42,
+  "quota_exceeded": false,
   "webhook_url": "https://example.com/webhook",
   "created_at": "2025-12-21T10:00:00Z",
   "upgraded_at": null,
@@ -639,6 +754,7 @@ Authorization: Bearer <jwt_token>
 - `plan_id` (string): Current plan ID.
 - `account_status` (string): `"free"` or `"paid"`.
 - `total_pdf_count` (number): All-time PDF count for the user.
+- `quota_exceeded` (boolean): `true` if free tier user has exceeded their plan's quota limit (from `plan.monthly_quota` in `Plans` table), `false` otherwise. Frontend should show a banner when this is `true`.
 - `webhook_url` (string, optional): User's default webhook URL for long job notifications.
 - `created_at` (string): ISO 8601 timestamp.
 - `upgraded_at` (string, optional): ISO 8601 timestamp when upgraded to paid plan.
@@ -652,10 +768,12 @@ Authorization: Bearer <jwt_token>
 
 ---
 
-## 7. `PUT /accounts/me/webhook`
+## 7. `GET /accounts/me/billing`
 
 **Description:**  
-Configure user's default webhook URL for long job notifications.
+Get current month's billing summary for the authenticated user. Returns accumulated billing amount and PDF count for the current month only.
+
+**Note:** For a complete list of all bills/invoices, use `GET /accounts/me/bills`.
 
 ### 7.1 Authentication
 
@@ -672,11 +790,466 @@ Authorization: Bearer <jwt_token>
 
 ### 7.2 HTTP Request
 
+**Method:** `GET`  
+**Path:** `/accounts/me/billing`
+
+### 7.3 Response
+
+#### 7.3.1 Success Response
+
+- **Status:** `200 OK`
+- **Content-Type:** `application/json`
+- **Body:**
+
+**For Paid Plan Users:**
+```json
+{
+  "billing": {
+    "plan_id": "paid-standard",
+    "plan_type": "paid",
+    "billing_month": "2025-12",
+    "monthly_billing_amount": 0.125,
+    "pdf_count": 25,
+    "price_per_pdf": 0.005,
+    "is_paid": false
+  }
+}
+```
+
+**For Free Plan Users:**
+```json
+{
+  "billing": {
+    "plan_id": "free-basic",
+    "plan_type": "free",
+    "billing_month": "2025-12",
+    "monthly_billing_amount": 0,
+    "pdf_count": 42,
+    "price_per_pdf": 0,
+    "is_paid": false
+  }
+}
+```
+
+**Fields:**
+- `plan_id` (string): Current plan ID.
+- `plan_type` (string): `"free"` or `"paid"`.
+- `billing_month` (string): Current billing month in `YYYY-MM` format (e.g., `"2025-12"`).
+- `monthly_billing_amount` (number): Total amount accumulated for the current month in USD. `0` for free plan users or if no bill exists for current month.
+- `pdf_count` (number): 
+  - **For free plan users:** All-time PDF count (cumulative total since account creation, does not reset).
+  - **For paid plan users:** Current month's PDF count only.
+- `price_per_pdf` (number): Price per PDF from the plan configuration. `0` for free plan users.
+- `is_paid` (boolean): Whether the current month's bill has been paid. `false` for free plan users.
+
+#### 7.3.2 Error Responses
+
+- `401 Unauthorized` – Missing or invalid JWT.
+- `403 Forbidden` – Account not found (`ACCOUNT_NOT_FOUND`).
+- `500 Internal Server Error` – Server-side failure.
+
+### 7.4 Example Request
+
+```bash
+curl -X GET https://api.podpdf.com/accounts/me/billing \
+  -H "Authorization: Bearer <jwt_token>"
+```
+
+### 7.5 Example Response
+
+**Paid Plan User:**
+```json
+{
+  "billing": {
+    "plan_id": "paid-standard",
+    "plan_type": "paid",
+    "billing_month": "2025-12",
+    "monthly_billing_amount": 0.125,
+    "pdf_count": 25,
+    "price_per_pdf": 0.005,
+    "is_paid": false
+  }
+}
+```
+
+**Free Plan User:**
+```json
+{
+  "billing": {
+    "plan_id": "free-basic",
+    "plan_type": "free",
+    "billing_month": "2025-12",
+    "monthly_billing_amount": 0,
+    "pdf_count": 42,
+    "price_per_pdf": 0,
+    "is_paid": false
+  }
+}
+```
+
+### 7.6 Usage Notes
+
+- **PDF Count Behavior:**
+  - **Free Plan Users:** `pdf_count` shows the **all-time total** (cumulative since account creation, does not reset).
+  - **Paid Plan Users:** `pdf_count` shows the **current month's count only** (resets each month).
+- **Current Month Summary:** For paid plan users, `monthly_billing_amount` and `pdf_count` show the current month's usage. For free plan users, `monthly_billing_amount` is always `0`, but `pdf_count` shows all-time total.
+- **Bills Table:** Monthly billing information is stored in a separate `Bills` table. Each month gets a new bill record.
+- **Billing Calculation:** For paid plan users, `monthly_billing_amount = pdf_count × price_per_pdf`.
+- **Bill Creation:** Bill records are automatically created when a paid user generates their first PDF of the month.
+- **Payment Status:** The `is_paid` flag indicates whether the bill has been paid. This can be updated when payment is processed (e.g., via Paddle integration).
+- **Billing Month Format:** The `billing_month` field uses `YYYY-MM` format (e.g., `"2025-12"` for December 2025).
+
+---
+
+## 8. `GET /accounts/me/bills`
+
+**Description:**  
+Get a list of all bills/invoices for the authenticated user. Returns all monthly billing records sorted by month (most recent first).
+
+### 8.1 Authentication
+
+- **Type:** JWT Bearer Token (Amazon Cognito)
+- **Header:**
+
+```http
+Authorization: Bearer <jwt_token>
+```
+
+**Requirements:**
+- Token must be valid and not expired.
+- User account must exist in `Users`.
+
+### 8.2 HTTP Request
+
+**Method:** `GET`  
+**Path:** `/accounts/me/bills`
+
+### 8.3 Response
+
+#### 8.3.1 Success Response
+
+- **Status:** `200 OK`
+- **Content-Type:** `application/json`
+- **Body:**
+
+**For Paid Plan Users:**
+```json
+{
+  "plan_id": "paid-standard",
+  "plan_type": "paid",
+  "bills": [
+    {
+      "billing_month": "2025-12",
+      "monthly_pdf_count": 25,
+      "monthly_billing_amount": 0.125,
+      "is_paid": false,
+      "bill_id": null,
+      "invoice_id": null,
+      "paid_at": null,
+      "created_at": "2025-12-01T10:00:00Z",
+      "updated_at": "2025-12-24T15:30:00Z"
+    },
+    {
+      "billing_month": "2025-11",
+      "monthly_pdf_count": 150,
+      "monthly_billing_amount": 0.75,
+      "is_paid": true,
+      "bill_id": "bill_abc123",
+      "invoice_id": "inv_xyz789",
+      "paid_at": "2025-12-05T14:20:00Z",
+      "created_at": "2025-11-01T10:00:00Z",
+      "updated_at": "2025-12-05T14:20:00Z"
+    },
+    {
+      "billing_month": "2025-10",
+      "monthly_pdf_count": 80,
+      "monthly_billing_amount": 0.40,
+      "is_paid": true,
+      "bill_id": "bill_def456",
+      "invoice_id": "inv_uvw012",
+      "paid_at": "2025-11-03T09:15:00Z",
+      "created_at": "2025-10-01T10:00:00Z",
+      "updated_at": "2025-11-03T09:15:00Z"
+    }
+  ]
+}
+```
+
+**For Free Plan Users:**
+```json
+{
+  "plan_id": "free-basic",
+  "plan_type": "free",
+  "bills": []
+}
+```
+
+**Fields:**
+- `plan_id` (string): Current plan ID.
+- `plan_type` (string): `"free"` or `"paid"`.
+- `bills` (array): List of bill records, sorted by `billing_month` descending (most recent first).
+  - `billing_month` (string): Billing month in `YYYY-MM` format.
+  - `monthly_pdf_count` (number): Number of PDFs generated in this month.
+  - `monthly_billing_amount` (number): Total amount for this month in USD.
+  - `is_paid` (boolean): Whether the bill has been paid.
+  - `bill_id` (string, optional): External bill ID (e.g., from payment processor).
+  - `invoice_id` (string, optional): Invoice ID from payment processor.
+  - `paid_at` (string, optional): ISO 8601 timestamp when bill was marked as paid.
+  - `created_at` (string): ISO 8601 timestamp when bill record was created.
+  - `updated_at` (string): ISO 8601 timestamp when bill record was last updated.
+
+#### 8.3.2 Error Responses
+
+- `401 Unauthorized` – Missing or invalid JWT.
+- `403 Forbidden` – Account not found (`ACCOUNT_NOT_FOUND`).
+- `500 Internal Server Error` – Server-side failure.
+
+### 8.4 Example Request
+
+```bash
+curl -X GET https://api.podpdf.com/accounts/me/bills \
+  -H "Authorization: Bearer <jwt_token>"
+```
+
+### 8.5 Example Response
+
+```json
+{
+  "plan_id": "paid-standard",
+  "plan_type": "paid",
+  "bills": [
+    {
+      "billing_month": "2025-12",
+      "monthly_pdf_count": 25,
+      "monthly_billing_amount": 0.125,
+      "is_paid": false,
+      "bill_id": null,
+      "invoice_id": null,
+      "paid_at": null,
+      "created_at": "2025-12-01T10:00:00Z",
+      "updated_at": "2025-12-24T15:30:00Z"
+    },
+    {
+      "billing_month": "2025-11",
+      "monthly_pdf_count": 150,
+      "monthly_billing_amount": 0.75,
+      "is_paid": true,
+      "bill_id": "bill_abc123",
+      "invoice_id": "inv_xyz789",
+      "paid_at": "2025-12-05T14:20:00Z",
+      "created_at": "2025-11-01T10:00:00Z",
+      "updated_at": "2025-12-05T14:20:00Z"
+    }
+  ]
+}
+```
+
+### 8.6 Usage Notes
+
+- **Sorting:** Bills are sorted by `billing_month` in descending order (most recent first).
+- **Free Plan Users:** Free plan users will always receive an empty `bills` array.
+- **Bill Creation:** Bill records are automatically created when a paid user generates their first PDF of a month.
+- **Payment Status:** The `is_paid` flag can be updated when payment is processed (e.g., via Paddle webhook).
+- **Historical Records:** All bills are preserved for invoicing and accounting purposes.
+
+---
+
+## 9. `PUT /accounts/me/upgrade`
+
+**Description:**  
+Upgrade a user account from free tier to a paid plan. This endpoint clears the `quota_exceeded` flag and updates the user's plan.
+
+### 9.1 Authentication
+
+- **Type:** JWT Bearer Token (Amazon Cognito)
+- **Header:**
+
+```http
+Authorization: Bearer <jwt_token>
+```
+
+**Requirements:**
+- Token must be valid and not expired.
+- User account must exist in `Users` table.
+
+### 9.2 HTTP Request
+
+**Method:** `PUT`  
+**Path:** `/accounts/me/upgrade`  
+**Content-Type:** `application/json`
+
+#### 9.2.1 Request Body
+
+```json
+{
+  "plan_id": "paid-standard"
+}
+```
+
+**Fields:**
+- `plan_id` (string, required): The ID of the paid plan to upgrade to (e.g., `"paid-standard"`).
+
+### 9.3 Response
+
+#### 9.3.1 Success Response
+
+**Status Code:** `200 OK`
+
+```json
+{
+  "message": "Account upgraded successfully",
+  "plan": {
+    "plan_id": "paid-standard",
+    "name": "Paid Standard",
+    "type": "paid",
+    "price_per_pdf": 0.005
+  },
+  "upgraded_at": "2025-12-24T15:30:00Z"
+}
+```
+
+**Fields:**
+- `message` (string): Success message.
+- `plan` (object): Details of the plan the user was upgraded to.
+  - `plan_id` (string): Plan identifier.
+  - `name` (string): Plan display name.
+  - `type` (string): Plan type (`"paid"`).
+  - `price_per_pdf` (number): Price per PDF in USD.
+- `upgraded_at` (string): ISO 8601 timestamp when the upgrade occurred.
+
+#### 9.3.2 Error Responses
+
+**400 Bad Request - Invalid Plan ID:**
+```json
+{
+  "error": {
+    "code": "INVALID_PLAN_ID",
+    "message": "Invalid plan_id: invalid-plan",
+    "details": {
+      "provided": "invalid-plan",
+      "reason": "Plan not found or invalid"
+    }
+  }
+}
+```
+
+**400 Bad Request - Plan Must Be Paid:**
+```json
+{
+  "error": {
+    "code": "INVALID_PLAN_ID",
+    "message": "Plan must be a paid plan",
+    "details": {
+      "provided": "free-basic",
+      "reason": "Plan must be a paid plan"
+    }
+  }
+}
+```
+
+**400 Bad Request - Plan Not Active:**
+```json
+{
+  "error": {
+    "code": "INVALID_PLAN_ID",
+    "message": "Plan is not active",
+    "details": {
+      "provided": "paid-standard",
+      "reason": "Plan is not active"
+    }
+  }
+}
+```
+
+**403 Forbidden - Account Not Found:**
+```json
+{
+  "error": {
+    "code": "ACCOUNT_NOT_FOUND",
+    "message": "User account not found. Please create an account before using the API.",
+    "details": {
+      "action_required": "create_account"
+    }
+  }
+}
+```
+
+**500 Internal Server Error:**
+```json
+{
+  "error": {
+    "code": "INTERNAL_SERVER_ERROR",
+    "message": "Failed to upgrade account",
+    "details": {}
+  }
+}
+```
+
+### 9.4 Example Request
+
+```bash
+curl -X PUT https://api.podpdf.com/accounts/me/upgrade \
+  -H "Authorization: Bearer <jwt_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "plan_id": "paid-standard"
+  }'
+```
+
+### 9.5 Example Response
+
+```json
+{
+  "message": "Account upgraded successfully",
+  "plan": {
+    "plan_id": "paid-standard",
+    "name": "Paid Standard",
+    "type": "paid",
+    "price_per_pdf": 0.005
+  },
+  "upgraded_at": "2025-12-24T15:30:00Z"
+}
+```
+
+### 9.6 Usage Notes
+
+- **Plan Validation:** The endpoint validates that:
+  - The plan exists in the `Plans` table.
+  - The plan is a paid plan (`type: "paid"`).
+  - The plan is active (`is_active: true`).
+- **Quota Exceeded Flag:** When a user upgrades, the `quota_exceeded` flag is automatically cleared.
+- **Account Status:** The user's `account_status` is updated to `"paid"`.
+- **Upgrade Timestamp:** The `upgraded_at` timestamp is set to the current time.
+- **Future PDFs:** After upgrade, all future PDFs will be billed according to the plan's `price_per_pdf`.
+- **Billing:** Monthly billing records will be created in the `Bills` table for all PDFs generated after the upgrade.
+
+---
+
+## 10. `PUT /accounts/me/webhook`
+
+**Description:**  
+Configure user's default webhook URL for long job notifications.
+
+### 10.1 Authentication
+
+- **Type:** JWT Bearer Token (Amazon Cognito)
+- **Header:**
+
+```http
+Authorization: Bearer <jwt_token>
+```
+
+**Requirements:**
+- Token must be valid and not expired.
+- User account must exist in `Users`.
+
+### 10.2 HTTP Request
+
 **Method:** `PUT`  
 **Path:** `/accounts/me/webhook`  
 **Content-Type:** `application/json`
 
-#### 7.2.1 Request Body
+#### 10.2.1 Request Body
 
 ```json
 {
@@ -721,12 +1294,12 @@ Authorization: Bearer <jwt_token>
 
 ---
 
-## 8. `DELETE /accounts/me`
+## 11. `DELETE /accounts/me`
 
 **Description:**  
 Delete the authenticated user's account and all associated data.
 
-### 8.1 Authentication
+### 11.1 Authentication
 
 - **Type:** JWT Bearer Token (Amazon Cognito)
 - **Header:**
@@ -739,14 +1312,14 @@ Authorization: Bearer <jwt_token>
 - Token must be valid and not expired.
 - User account must exist in `Users`.
 
-### 8.2 HTTP Request
+### 11.2 HTTP Request
 
 **Method:** `DELETE`  
 **Path:** `/accounts/me`
 
-### 8.3 Response
+### 11.3 Response
 
-#### 8.3.1 Success Response
+#### 11.3.1 Success Response
 
 - **Status:** `204 No Content`
 - **Body:** Empty
@@ -765,7 +1338,7 @@ Authorization: Bearer <jwt_token>
 
 ---
 
-## 9. Health Check (Optional, Internal)
+## 11. Health Check (Optional, Internal)
 
 > **Note:** This endpoint is optional and not required for the public API. It is recommended for internal monitoring.
 
@@ -796,6 +1369,144 @@ Implementation of `/health` is left to the service owner and may be internal-onl
 
 ---
 
+## 12. `POST /signin` (Testing Only)
+
+**Description:**  
+⚠️ **Note:** This endpoint is for **testing purposes only**. Production frontend should use AWS Amplify Auth for authentication.
+
+Authenticate a user with Cognito and return JWT tokens (ID token, access token, refresh token).
+
+### 6.1 Authentication
+
+- **Type:** None (public endpoint)
+- **Note:** This endpoint does not require authentication. It is used to obtain authentication tokens.
+
+### 6.2 HTTP Request
+
+**Method:** `POST`  
+**Path:** `/signin`  
+**Content-Type:** `application/json`
+
+#### 6.2.1 Request Body
+
+```json
+{
+  "email": "user@example.com",
+  "password": "SecurePassword123!"
+}
+```
+
+**Fields:**
+- `email` (string, required) - User's email address (used as username in Cognito)
+- `password` (string, required) - User's password
+
+### 6.3 HTTP Response
+
+#### 6.3.1 Success Response (200 OK)
+
+```json
+{
+  "message": "Sign-in successful",
+  "tokens": {
+    "idToken": "eyJraWQiOiJcL0t...",
+    "accessToken": "eyJraWQiOiJcL0t...",
+    "refreshToken": "eyJjdHkiOiJKV1QiLCJlbmMiOiJBMjU2R0NNIn0...",
+    "expiresIn": 86400
+  }
+}
+```
+
+**Fields:**
+- `message` (string) - Success message
+- `tokens` (object) - Authentication tokens
+  - `idToken` (string) - JWT ID token (contains user claims)
+  - `accessToken` (string) - JWT access token (for API authorization)
+  - `refreshToken` (string) - Refresh token (for obtaining new tokens)
+  - `expiresIn` (number) - Token expiration time in seconds
+
+#### 6.3.2 Error Responses
+
+**400 Bad Request - Missing Fields**
+```json
+{
+  "error": "BadRequest",
+  "message": "Missing required fields: email and password"
+}
+```
+
+**400 Bad Request - User Not Confirmed**
+```json
+{
+  "error": "BadRequest",
+  "message": "User account is not confirmed. Please verify your email address."
+}
+```
+
+**401 Unauthorized - Invalid Credentials**
+```json
+{
+  "error": "Unauthorized",
+  "message": "Invalid email or password"
+}
+```
+
+**429 Too Many Requests**
+```json
+{
+  "error": "TooManyRequests",
+  "message": "Too many sign-in attempts. Please try again later."
+}
+```
+
+**500 Internal Server Error**
+```json
+{
+  "error": "InternalServerError",
+  "message": "Authentication failed. Please try again later."
+}
+```
+
+### 6.4 Example Request
+
+```bash
+curl -X POST https://api.podpdf.com/signin \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "user@example.com",
+    "password": "SecurePassword123!"
+  }'
+```
+
+### 6.5 Example Response
+
+```json
+{
+  "message": "Sign-in successful",
+  "tokens": {
+    "idToken": "eyJraWQiOiJcL0t...",
+    "accessToken": "eyJraWQiOiJcL0t...",
+    "refreshToken": "eyJjdHkiOiJKV1QiLCJlbmMiOiJBMjU2R0NNIn0...",
+    "expiresIn": 86400
+  }
+}
+```
+
+### 6.6 Usage Notes
+
+- **Testing Only:** This endpoint is provided for testing purposes. Production applications should use AWS Amplify Auth SDK.
+- **Token Usage:** Use the `accessToken` in the `Authorization` header for authenticated API requests: `Authorization: Bearer <accessToken>`
+- **Token Expiration:** Tokens expire after 24 hours (as configured in Cognito). Use the `refreshToken` to obtain new tokens.
+- **Rate Limiting:** Cognito enforces rate limits on authentication attempts. Too many failed attempts will result in a 429 error.
+
+**Status Codes:**
+- `200 OK` – Sign-in successful
+- `400 Bad Request` – Missing fields or user not confirmed
+- `401 Unauthorized` – Invalid credentials
+- `429 Too Many Requests` – Too many sign-in attempts
+- `500 Internal Server Error` – Authentication service error
+
+---
+
 ## Webhook Payload Format
 
 When a long job completes, a POST request is sent to the configured webhook URL with the following payload:
@@ -808,7 +1519,7 @@ When a long job completes, a POST request is sent to the configured webhook URL 
   "s3_url_expires_at": "2025-12-21T11:32:15Z",
   "pages": 150,
   "mode": "html",
-  "truncated": true,
+  "truncated": false,
   "created_at": "2025-12-21T10:30:00Z",
   "completed_at": "2025-12-21T10:32:15Z"
 }

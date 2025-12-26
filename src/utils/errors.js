@@ -99,10 +99,38 @@ const BadRequest = {
       { max_size_mb: maxSize }
     ),
 
-  INVALID_PLAN_ID: (planId) =>
-    createErrorResponse(400, 'INVALID_PLAN_ID', `Invalid plan_id: ${planId}`, {
-      provided: planId,
-    }),
+  INVALID_PLAN_ID: (planId, reason = null) =>
+    createErrorResponse(
+      400,
+      'INVALID_PLAN_ID',
+      reason || `Invalid plan_id: ${planId}`,
+      {
+        provided: planId,
+        reason: reason || 'Plan not found or invalid',
+      }
+    ),
+
+  INVALID_PARAMETER: (paramName, message) =>
+    createErrorResponse(
+      400,
+      'INVALID_PARAMETER',
+      `Invalid ${paramName}: ${message}`,
+      {
+        parameter: paramName,
+        message,
+      }
+    ),
+
+  PAGE_LIMIT_EXCEEDED: (pageCount, maxPages) =>
+    createErrorResponse(
+      400,
+      'PAGE_LIMIT_EXCEEDED',
+      `PDF page count (${pageCount}) exceeds maximum allowed pages (${maxPages})`,
+      {
+        page_count: pageCount,
+        max_pages: maxPages,
+      }
+    ),
 
   INVALID_WEBHOOK_URL: () =>
     createErrorResponse(
@@ -153,7 +181,7 @@ const Forbidden = {
       }
     ),
 
-  QUOTA_EXCEEDED: (currentUsage, quota) =>
+  QUOTA_EXCEEDED: (currentUsage, quota, quotaExceeded = true) =>
     createErrorResponse(
       403,
       'QUOTA_EXCEEDED',
@@ -161,6 +189,7 @@ const Forbidden = {
       {
         current_usage: currentUsage,
         quota,
+        quota_exceeded: quotaExceeded,
         action_required: 'upgrade_to_paid_plan',
       }
     ),

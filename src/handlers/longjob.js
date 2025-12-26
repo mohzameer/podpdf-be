@@ -18,6 +18,7 @@ const {
   generateJobId,
   createJobRecord,
 } = require('../services/jobTracking');
+const { generatePDF } = require('../services/pdf');
 const { BadRequest, Forbidden, InternalServerError } = require('../utils/errors');
 
 const sqsClient = new SQSClient({ region: process.env.AWS_REGION || 'eu-central-1' });
@@ -73,8 +74,23 @@ async function handler(event) {
       return userError;
     }
 
+    if (!user || !user.user_id) {
+      return {
+        statusCode: 403,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          error: {
+            code: 'ACCOUNT_NOT_FOUND',
+            message: 'User account not found',
+          },
+        }),
+      };
+    }
+
+    const userId = user.user_id;
+
     // Check rate limit
-    const rateLimitCheck = await checkRateLimit(userSub, plan);
+    const rateLimitCheck = await checkRateLimit(userSub, userId, plan);
     if (!rateLimitCheck.allowed) {
       return rateLimitCheck.error;
     }
@@ -85,6 +101,37 @@ async function handler(event) {
       return quotaCheck.error;
     }
 
+    // Pre-validate page limit by generating PDF and checking page count
+    // This ensures we return the error immediately instead of queuing and failing later
+    let pdfResult;
+    try {
+      pdfResult = await generatePDF(content, inputType, options || {});
+    } catch (error) {
+      // Check for page limit exceeded error
+      if (error.message && error.message.startsWith('PAGE_LIMIT_EXCEEDED:')) {
+        const [, pageCount, maxPages] = error.message.split(':');
+        logger.warn('Page limit exceeded in longjob handler', {
+          userSub,
+          pageCount: parseInt(pageCount, 10),
+          maxPages: parseInt(maxPages, 10),
+        });
+        return BadRequest.PAGE_LIMIT_EXCEEDED(parseInt(pageCount, 10), parseInt(maxPages, 10));
+      }
+      // For other PDF generation errors, log and return generic error
+      logger.error('PDF generation failed in longjob handler', {
+        error: error.message,
+        userSub,
+      });
+      return InternalServerError.PDF_GENERATION_FAILED(error.message);
+    }
+
+    // Page limit check passed, continue with queuing
+    const { pages } = pdfResult;
+    logger.info('Page limit check passed, queuing job', {
+      userSub,
+      pages,
+    });
+
     // Get user's default webhook URL if not provided in request
     const finalWebhookUrl = webhookUrl || user.webhook_url || null;
 
@@ -94,7 +141,7 @@ async function handler(event) {
     // Create job record with status 'queued'
     await createJobRecord({
       jobId,
-      userSub,
+      userId,
       jobType: 'long',
       mode: inputType,
       status: 'queued',
@@ -104,7 +151,8 @@ async function handler(event) {
     // Prepare SQS message
     const messageBody = {
       job_id: jobId,
-      user_sub: userSub,
+      user_id: userId,
+      user_sub: userSub, // Keep for backward compatibility in processor
       input_type: inputType,
       content,
       options: options || {},
