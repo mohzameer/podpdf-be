@@ -310,7 +310,7 @@ async function updateWebhook(event) {
  */
 async function getBilling(event) {
   try {
-    const userSub = extractUserSub(event);
+    const userSub = await extractUserSub(event);
 
     // Get user account
     const user = await getUserAccount(userSub);
@@ -389,7 +389,7 @@ async function getBilling(event) {
  */
 async function getBills(event) {
   try {
-    const userSub = extractUserSub(event);
+    const userSub = await extractUserSub(event);
 
     // Get user account
     const user = await getUserAccount(userSub);
@@ -473,7 +473,7 @@ async function getBills(event) {
  */
 async function upgradeToPaidPlan(event) {
   try {
-    const userSub = extractUserSub(event);
+    const userSub = await extractUserSub(event);
 
     // Get user account
     const user = await getUserAccount(userSub);
