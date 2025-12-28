@@ -105,7 +105,7 @@ const BadRequest = {
       'INVALID_PLAN_ID',
       reason || `Invalid plan_id: ${planId}`,
       {
-        provided: planId,
+      provided: planId,
         reason: reason || 'Plan not found or invalid',
       }
     ),

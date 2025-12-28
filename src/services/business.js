@@ -64,11 +64,11 @@ async function getPlan(planId) {
 
 /**
  * Check and enforce rate limit for free tier users
- * @param {string} userSub - Cognito user sub
+ * @param {string} userId - User ID (ULID)
  * @param {object} plan - User's plan configuration
  * @returns {Promise<{allowed: boolean, error: object|null}>}
  */
-async function checkRateLimit(userSub, userId, plan) {
+async function checkRateLimit(userId, plan) {
   try {
     // If plan has no rate limit (paid tier), allow
     if (!plan.rate_limit_per_minute) {
@@ -82,9 +82,9 @@ async function checkRateLimit(userSub, userId, plan) {
     // Calculate TTL (1 hour from now)
     const ttl = Math.floor(now.getTime() / 1000) + 3600;
 
-    // Use user_sub directly from JWT token (no DynamoDB lookup needed)
+    // Use user_id for rate limiting (consistent across all tables)
     let rateLimitRecord = await getItem(USER_RATE_LIMITS_TABLE, {
-      user_sub: userSub,
+      user_id: userId,
       minute_timestamp: minuteTimestamp,
     });
 
@@ -106,16 +106,16 @@ async function checkRateLimit(userSub, userId, plan) {
       await updateItem(
         USER_RATE_LIMITS_TABLE,
         {
-          user_sub: userSub,
+          user_id: userId,
           minute_timestamp: minuteTimestamp,
         },
         'SET request_count = request_count + :inc',
         { ':inc': 1 }
       );
     } else {
-      // Create new rate limit record with user_sub
+      // Create new rate limit record with user_id
       await putItem(USER_RATE_LIMITS_TABLE, {
-        user_sub: userSub,
+        user_id: userId,
         minute_timestamp: minuteTimestamp,
         request_count: 1,
         ttl,
@@ -126,7 +126,6 @@ async function checkRateLimit(userSub, userId, plan) {
   } catch (error) {
     logger.error('Rate limit check error', {
       error: error.message,
-      userSub,
       userId,
     });
     // On error, allow the request (fail open)
@@ -249,9 +248,50 @@ async function incrementPdfCount(userSub, userId, plan = null) {
       return;
     }
     
-    // Calculate billing amount if paid plan
+    // Check if plan has free credits and consume them first
+    let billingIncrement = 0;
     const isPaidPlan = plan && plan.type === 'paid' && plan.price_per_pdf;
-    const billingIncrement = isPaidPlan ? plan.price_per_pdf : 0;
+    const hasFreeCredits = plan && plan.free_credits && plan.free_credits > 0;
+    
+    if (hasFreeCredits && isPaidPlan) {
+      // Try to consume free credit first
+      try {
+        // Atomically decrement free_credits_remaining
+        const updatedUser = await updateItem(
+          USERS_TABLE,
+          { user_id: userId },
+          'SET free_credits_remaining = if_not_exists(free_credits_remaining, :zero) - :dec',
+          { ':zero': 0, ':dec': 1 }
+        );
+        
+        const remainingCredits = updatedUser.free_credits_remaining;
+        
+        // Charge only if free credits are exhausted (<= 0)
+        if (remainingCredits <= 0) {
+          billingIncrement = plan.price_per_pdf;
+          logger.debug('Free credits exhausted, charging user', {
+            userId,
+            remainingCredits,
+            charge: billingIncrement,
+          });
+        } else {
+          logger.debug('Free credit used, no charge', {
+            userId,
+            remainingCredits,
+          });
+        }
+      } catch (error) {
+        // If update fails, charge to be safe
+        logger.warn('Error consuming free credit, charging user', {
+          userId,
+          error: error.message,
+        });
+        billingIncrement = plan.price_per_pdf;
+      }
+    } else if (isPaidPlan) {
+      // No free credits, charge normally
+      billingIncrement = plan.price_per_pdf;
+    }
     
     // Update total_pdf_count in Users table
     try {
@@ -279,8 +319,8 @@ async function incrementPdfCount(userSub, userId, plan = null) {
       }
     }
     
-    // For paid plans, create or update bill record in Bills table
-    if (isPaidPlan) {
+    // For paid plans, create or update bill record in Bills table (only if charging)
+    if (isPaidPlan && billingIncrement > 0) {
       try {
         // Try to get existing bill for this month
         const { getItem } = require('./dynamodb');

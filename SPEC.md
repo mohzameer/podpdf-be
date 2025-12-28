@@ -143,6 +143,7 @@ Client → API Gateway → Lambda (longjob) → SQS Queue
      - `plan_id` (String) - ID of the plan this user is on (e.g., `"free-basic"`, `"paid-standard"`)
      - `account_status` (String) - `"free"`, `"paid"`, or `"cancelled"` (defaults to `"free"` on account creation)
      - `total_pdf_count` (Number) - All-time PDF count for the user
+     - `free_credits_remaining` (Number, optional) - Remaining free PDF credits for this user. Decremented when free credits are used. Can go negative (e.g., `-1`, `-2`) due to concurrent requests. Defaults to `null` if plan has no free credits. Initialized from `plan.free_credits` when user upgrades to a plan with free credits.
      - `quota_exceeded` (Boolean) - `true` if free tier user has exceeded their plan's quota limit (from `plan.monthly_quota`), `false` otherwise (defaults to `false`)
      - `webhook_url` (String, optional) - User's default webhook URL for long job notifications
      - `created_at` (String, ISO 8601 timestamp) - Account creation timestamp
@@ -152,13 +153,12 @@ Client → API Gateway → Lambda (longjob) → SQS Queue
 2. **UserRateLimits**
    - **Partition Key:** `user_id` (String, ULID) - User identifier (reference to Users table)
    - **Sort Key:** `minute_timestamp` (format: YYYY-MM-DD-HH-MM)
-   - **Global Secondary Index:** `UserSubMinuteTimestampIndex` on `user_sub` and `minute_timestamp` (for lookups by Cognito user_sub)
    - **Attributes:**
      - `user_id` (String, ULID) - User identifier (partition key)
-     - `user_sub` (String) - Cognito user identifier (for GSI lookups)
      - `minute_timestamp` (String) - Timestamp in format YYYY-MM-DD-HH-MM (sort key)
      - `request_count` (Number, atomic counter) - Number of requests in this minute window
      - `ttl` (Number, expires after 1 hour) - Time-to-live for automatic cleanup
+   - **Note:** `user_id` is used as partition key for consistency across all tables. We already have `user_id` after the user account lookup (required for quota checks, billing, etc.), so using `user_id` for rate limiting doesn't add any extra lookups and maintains consistency.
 
 3. **JobDetails**
    - **Partition Key:** `job_id` (UUID, generated per PDF generation request)
@@ -209,13 +209,28 @@ Client → API Gateway → Lambda (longjob) → SQS Queue
      - `name` (String) - Human-readable plan name (e.g., `"Free Basic"`, `"Paid Standard"`)
      - `type` (String) - `"free"` or `"paid"`
      - `monthly_quota` (Number, optional) - Number of PDFs included per month (e.g., `100` for free, `null` for unlimited paid)
+     - `free_credits` (Number, optional) - Number of free PDF credits included with the plan (e.g., `100`). These credits are used before `price_per_pdf` billing starts. Defaults to `0` if not set.
      - `price_per_pdf` (Number) - Price per PDF (e.g., `0` for free, `0.005` for paid)
      - `rate_limit_per_minute` (Number, optional) - Per-user rate limit (e.g., `20` for free, `null` or higher value for paid)
      - `description` (String, optional) - Description of the plan
      - `is_active` (Boolean) - Indicates if plan is active and available for assignment
    - **TTL:** Not applicable (plan configurations are long-lived)
 
-6. **Bills**
+6. **ApiKeys**
+   - **Partition Key:** `api_key` (String) - The API key itself (e.g., `"pk_live_abc123..."` or `"pk_test_xyz789..."`)
+   - **Attributes:**
+     - `api_key` (String) - The API key (partition key, also stored as attribute for consistency)
+     - `user_id` (String, ULID) - User identifier (reference to Users table, used for rate limiting and quota checks)
+     - `user_sub` (String) - Cognito user identifier (stored for reference, but not used for rate limiting)
+     - `name` (String, optional) - User-provided name/description for the API key (e.g., `"Production API Key"`, `"Development Key"`)
+     - `is_active` (Boolean) - Whether the API key is active and can be used (`false` if revoked)
+     - `created_at` (String, ISO 8601 timestamp) - When the API key was created
+     - `last_used_at` (String, ISO 8601 timestamp, optional) - Last time the API key was used
+     - `revoked_at` (String, ISO 8601 timestamp, optional) - When the API key was revoked (if revoked)
+   - **TTL:** Not applicable (API keys are long-lived until revoked)
+   - **Note:** API keys are stored in plaintext as the partition key for fast lookups. The key format should be prefixed (e.g., `pk_live_` or `pk_test_`) for identification. `user_id` is used for rate limiting and quota checks for consistency across all tables.
+
+7. **Bills**
    - **Partition Key:** `user_id` (String, ULID) - User identifier
    - **Sort Key:** `billing_month` (String) - Billing month in `YYYY-MM` format (e.g., `"2025-12"`)
    - **Attributes:**
@@ -303,19 +318,33 @@ Client → API Gateway → Lambda (longjob) → SQS Queue
      - `options` (object, optional): Rendering options
 
 3. **API Gateway Processing**
-   - Validates the JWT using the Cognito authorizer
+   - **JWT Token Path:** Validates the JWT using the Cognito authorizer (if JWT is provided)
+   - **API Key Path:** Passes through to Lambda for API key validation (if API key is provided)
    - Applies global throttling
    - Routes valid request to Lambda function
 
 4. **Lambda Handler Execution (quickjob)**
    
+   **Authentication Phase:**
+   - **JWT Token Path:**
+     - Extracts user ID (`sub`) directly from JWT claims (already validated by API Gateway)
+     - No additional DynamoDB lookup needed for authentication
+   - **API Key Path:**
+     - Extracts API key from `X-API-Key` header or `Authorization: Bearer` header
+     - Looks up API key in `ApiKeys` table (one DynamoDB lookup)
+     - If found and `is_active: true`, retrieves `user_id` (and `user_sub` for user account lookup)
+     - Updates `last_used_at` timestamp
+     - If not found or inactive, rejects with 401 error
+   
    **Validation Phase:**
-   - Extracts user ID (`sub`) from JWT claims
-   - Validates user account exists: Retrieves user record from DynamoDB `Users` table
+   - Validates user account exists: Retrieves user record from DynamoDB `Users` table using `user_id`
    - If user record doesn't exist, rejects with 403 error
    - Reads user plan from DynamoDB
    - Validates request body (same validation as described in API Specification)
    - Enforces per-user rate limit for free tier users only (20 requests/minute)
+     - Uses `user_id` for rate limit lookups (works for both JWT and API key)
+     - Rate limit check is a direct DynamoDB lookup using `user_id` as partition key
+     - `user_id` is already available from the user account lookup (required for quota checks, billing, etc.)
    - Checks all-time quota for free tier users (quota limit from `plan.monthly_quota` in `Plans` table)
    - Validates input size limits (~5 MB maximum)
 
@@ -369,8 +398,28 @@ Client → API Gateway → Lambda (longjob) → SQS Queue
 
 4. **Lambda Handler Execution (longjob)**
    
+   **Authentication Phase:**
+   - **JWT Token Path:**
+     - Extracts user ID (`sub`) directly from JWT claims (already validated by API Gateway)
+     - No additional DynamoDB lookup needed for authentication
+   - **API Key Path:**
+     - Extracts API key from `X-API-Key` header or `Authorization: Bearer` header
+     - Looks up API key in `ApiKeys` table (one DynamoDB lookup)
+     - If found and `is_active: true`, retrieves `user_id` (and `user_sub` for user account lookup)
+     - Updates `last_used_at` timestamp
+     - If not found or inactive, rejects with 401 error
+   
    **Validation Phase:**
-   - Same validation as QuickJob (user account, request body, rate limits, quota)
+   - Validates user account exists: Retrieves user record from DynamoDB `Users` table using `user_id`
+   - If user record doesn't exist, rejects with 403 error
+   - Reads user plan from DynamoDB
+   - Validates request body (same validation as described in API Specification)
+   - Enforces per-user rate limit for free tier users only (20 requests/minute)
+     - Uses `user_id` for rate limit lookups (works for both JWT and API key)
+     - Rate limit check is a direct DynamoDB lookup using `user_id` as partition key
+     - `user_id` is already available from the user account lookup (required for quota checks, billing, etc.)
+   - Checks all-time quota for free tier users (quota limit from `plan.monthly_quota` in `Plans` table)
+   - Validates input size limits (~5 MB maximum)
    - If `webhook_url` provided, validates it's a valid HTTPS URL
 
    **Queueing Phase (if checks pass):**
@@ -578,16 +627,114 @@ Client → API Gateway → Lambda (longjob) → SQS Queue
 - `webhook_url` must be a valid HTTPS URL
 - Returns 400 if URL is invalid or not HTTPS
 
+### 5. GET /plans and GET /plans/{plan_id}
+
+**Description:** Get plan details. Use `GET /plans` to list all active plans, or `GET /plans/{plan_id}` to get details for a specific plan.
+
+**Authentication:** None (public endpoint)
+
+**Response (List All Plans - 200 OK):**
+```json
+{
+  "plans": [
+    {
+      "plan_id": "free-basic",
+      "name": "Free Basic",
+      "type": "free",
+      "monthly_quota": 100,
+      "price_per_pdf": 0,
+      "rate_limit_per_minute": 20,
+      "description": "Free tier with 100 PDFs all-time quota (not monthly - cumulative, does not reset). Rate limit: 20 requests per minute.",
+      "is_active": true
+    },
+    {
+      "plan_id": "paid-standard",
+      "name": "Paid Standard",
+      "type": "paid",
+      "monthly_quota": null,
+      "price_per_pdf": 0.005,
+      "rate_limit_per_minute": null,
+      "description": "Paid plan with unlimited PDFs. Price: $0.005 per PDF. Unlimited rate limit.",
+      "is_active": true
+    }
+  ],
+  "count": 2
+}
+```
+
+**Response (Get Specific Plan - 200 OK):**
+```json
+{
+  "plan": {
+    "plan_id": "free-basic",
+    "name": "Free Basic",
+    "type": "free",
+    "monthly_quota": 100,
+    "price_per_pdf": 0,
+    "rate_limit_per_minute": 20,
+    "description": "Free tier with 100 PDFs all-time quota (not monthly - cumulative, does not reset). Rate limit: 20 requests per minute.",
+    "is_active": true
+  }
+}
+```
+
+**Response (404 Not Found):**
+- Plan not found (for specific plan endpoint)
+
+**Plan Fields:**
+- `plan_id` (string) - Unique plan identifier
+- `name` (string) - Human-readable plan name
+- `type` (string) - Plan type: `"free"` or `"paid"`
+- `monthly_quota` (number|null) - Number of PDFs included per month for free plans, `null` for unlimited paid plans
+- `price_per_pdf` (number) - Price per PDF in USD (0 for free plans)
+- `rate_limit_per_minute` (number|null) - Per-user rate limit in requests per minute, `null` for unlimited
+- `description` (string|null) - Plan description
+- `is_active` (boolean) - Whether the plan is active and available
+
+**Notes:**
+- Public endpoint - no authentication required
+- List endpoint only returns active plans (`is_active: true`)
+- Plans are sorted by type (free first) then alphabetically by name
+
+### Authentication Methods
+
+The `/quickjob` and `/longjob` endpoints support two authentication methods:
+
+1. **JWT Token (Bearer Token)**
+   - **Header:** `Authorization: Bearer <jwt_token>`
+   - Token is validated by API Gateway JWT authorizer
+   - User ID (`sub`) is extracted directly from JWT claims
+   - No additional DynamoDB lookup needed for authentication
+
+2. **API Key**
+   - **Header:** `X-API-Key: <api_key>` or `Authorization: Bearer <api_key>`
+   - API key is looked up in `ApiKeys` table
+   - If found and active, `user_id` and `user_sub` are retrieved
+   - If not found or revoked, returns 401 Unauthorized
+
+**Authentication Requirements:**
+- **One of the above methods must be present** (either JWT token OR API key)
+- If both are provided, API key takes precedence
+- If neither is provided, returns 401 Unauthorized
+
 ### Request Validation
 
 All requests are validated in the following order:
 
 1. **Authentication Validation:**
-   - JWT token must be present and valid (401 if missing or invalid)
-   - User ID (`sub`) must be extracted from JWT claims
+   - **JWT Token Path:**
+     - JWT token must be present and valid (401 if missing or invalid)
+     - User ID (`sub`) is extracted directly from JWT claims (no DynamoDB lookup)
+   - **API Key Path:**
+     - API key must be present in `X-API-Key` header or `Authorization: Bearer` header
+     - API key is looked up in `ApiKeys` table (one DynamoDB lookup)
+     - If found and `is_active: true`, retrieves `user_id` and `user_sub`
+     - If not found or `is_active: false`, returns 401 Unauthorized
+     - Updates `last_used_at` timestamp on successful lookup
 
 2. **Account Validation:**
    - User account must exist in DynamoDB `Users` table
+   - Lookup is done using `user_id` (from JWT `sub` via GSI, or directly from API key lookup)
    - If account doesn't exist, returns 403 error with `ACCOUNT_NOT_FOUND` code
 
 3. **Request Body Validation:**
@@ -624,6 +771,68 @@ All options are passed directly to Puppeteer's `page.pdf()` method. Common optio
 
 ---
 
+## API Key Management
+
+### API Key Table Structure
+
+The `ApiKeys` table stores API keys for programmatic access to `/quickjob` and `/longjob` endpoints.
+
+**Key Design:**
+- **Partition Key:** `api_key` (the API key itself, stored in plaintext for fast lookups)
+- **No Sort Key:** Simple key-value lookup structure
+- **Format:** API keys should be prefixed (e.g., `pk_live_...` or `pk_test_...`) for identification
+
+**Attributes:**
+- `api_key` (String) - The API key (partition key)
+- `user_id` (String, ULID) - User identifier (reference to Users table)
+- `user_sub` (String) - Cognito user identifier (for rate limiting - same `user_sub` used in UserRateLimitsTable)
+- `name` (String, optional) - User-provided name/description (e.g., `"Production API Key"`, `"Development Key"`)
+- `is_active` (Boolean) - Whether the API key is active (`false` if revoked)
+- `created_at` (String, ISO 8601) - Creation timestamp
+- `last_used_at` (String, ISO 8601, optional) - Last usage timestamp (updated on each successful authentication)
+- `revoked_at` (String, ISO 8601, optional) - Revocation timestamp (set when key is revoked)
+
+### API Key Usage
+
+**Authentication:**
+- API keys can be provided in two ways:
+  1. `X-API-Key: <api_key>` header
+  2. `Authorization: Bearer <api_key>` header (for compatibility with standard auth patterns)
+- API key lookup is a single DynamoDB `GetItem` operation using the API key as partition key
+- If found and `is_active: true`, the request proceeds with the associated `user_id` and `user_sub`
+- If not found or `is_active: false`, returns 401 Unauthorized
+
+**Rate Limiting:**
+- Once `user_id` is retrieved from the user account lookup (after API key or JWT authentication), rate limiting uses `user_id` as partition key
+- Rate limit records use `user_id` as partition key (same table: `UserRateLimitsTable`)
+- Same per-minute window, atomic counters, and TTL-based cleanup
+- **Performance:** 
+  - **JWT Token:** User account lookup (1 DynamoDB lookup via GSI on `user_sub`) → Rate limit check using `user_id` (1 DynamoDB lookup) = 2 total lookups
+  - **API Key:** API key lookup (1 DynamoDB lookup) → User account lookup using `user_id` (1 DynamoDB lookup) → Rate limit check using `user_id` (1 DynamoDB lookup) = 3 total lookups
+- **Note:** We use `user_id` for rate limiting because we already have it after the user account lookup (required for quota checks, billing, etc.), maintaining consistency across all tables
+
+**Multiple API Keys per User:**
+- Users can create multiple API keys (e.g., one for production, one for development)
+- Each API key is independent and can be revoked separately
+- All API keys for a user share the same rate limits and quota (tied to `user_id`)
+
+**Revocation:**
+- API keys can be revoked by setting `is_active: false` and `revoked_at: <timestamp>`
+- Revoked keys immediately fail authentication (401 Unauthorized)
+- Revoked keys are not deleted (for audit trail) but are marked inactive
+
+### API Key Management Endpoints (Future)
+
+The following endpoints will be needed for API key management (to be implemented):
+
+- `POST /accounts/me/api-keys` - Create a new API key
+- `GET /accounts/me/api-keys` - List all API keys for the authenticated user
+- `DELETE /accounts/me/api-keys/{api_key_id}` - Revoke an API key
+
+**Note:** These endpoints will require JWT authentication (not API key authentication) to prevent API key self-revocation loops.
+
+---
+
 ## Input Support
 
 ### HTML
@@ -656,8 +865,15 @@ All options are passed directly to Puppeteer's `page.pdf()` method. Common optio
 
 ### Authentication
 
-- **Mandatory:** All requests require valid Cognito JWT token
+- **Mandatory:** All requests to `/quickjob` and `/longjob` require either:
+  - **JWT Token:** Valid Cognito JWT token in `Authorization: Bearer <token>` header
+  - **API Key:** Valid API key in `X-API-Key: <key>` or `Authorization: Bearer <key>` header
+- **One of the above must be present** (either JWT token OR API key)
 - **No unauthenticated access** allowed
+
+**Authentication Performance:**
+- **JWT Token:** API Gateway validates token, `user_sub` extracted directly (no DynamoDB lookup)
+- **API Key:** One DynamoDB lookup to `ApiKeys` table to retrieve `user_id` and `user_sub`
 
 ### Throttling Layers
 
@@ -669,6 +885,11 @@ All options are passed directly to Puppeteer's `page.pdf()` method. Common optio
    - Enforced in code using DynamoDB atomic counters
    - **Free Tier:** 20 requests/minute (enforced per user)
    - **Paid Tier:** Unlimited (only limited by API Gateway global throttling)
+   - **Rate Limit Table:** `UserRateLimitsTable` with partition key `user_id`
+   - **Performance:**
+     - **JWT Token:** User account lookup via GSI on `user_sub` (1 DynamoDB lookup) → Rate limit check using `user_id` (1 DynamoDB lookup) = 2 total lookups
+     - **API Key:** API key lookup (1 DynamoDB lookup) → User account lookup using `user_id` (1 DynamoDB lookup) → Rate limit check using `user_id` (1 DynamoDB lookup) = 3 total lookups
+   - **Note:** Rate limiting uses `user_id` as partition key for consistency across all tables. We already have `user_id` after the user account lookup (required for quota checks, billing, etc.), so using `user_id` doesn't add any extra lookups and maintains consistency.
 
 ### Content Limits
 
@@ -705,12 +926,15 @@ All options are passed directly to Puppeteer's `page.pdf()` method. Common optio
 
 - **Upgrade Required:** Users must upgrade to paid plan after reaching 100 PDFs
 - **PDF Limit:** Unlimited PDFs (no quota limit)
-- **Price:** $0.005 per PDF
-- **Billing:** Usage tracked per PDF and invoiced monthly
+- **Free Credits:** Plans may include `free_credits` (e.g., 100 free PDFs). Free credits are consumed first before `price_per_pdf` billing starts.
+- **Price:** $0.005 per PDF (charged only after free credits are exhausted)
+- **Billing:** Usage tracked per PDF and invoiced monthly. Free credits are used first, then billing applies.
 - **Tracking:** 
   - All-time PDF count maintained in `Users` table
+  - `free_credits_remaining` in `Users` table tracks remaining free credits (can go negative due to concurrent requests)
   - Monthly billing records stored in `Bills` table (one record per user per month)
   - Each bill record tracks `monthly_pdf_count`, `monthly_billing_amount`, and `is_paid` status
+  - Only PDFs that exceed free credits are billed (when `free_credits_remaining <= 0`)
   - Future payment processor integration fields (bill_id, invoice_id, paddle_subscription_id, etc.) can be added to bill records
 - **Rate Limits:** Unlimited per-user rate (only limited by API Gateway throttling)
 
@@ -731,9 +955,15 @@ All options are passed directly to Puppeteer's `page.pdf()` method. Common optio
      - Sets `quota_exceeded` flag in `Users` table when quota is exceeded
    - For paid plan users:
      - No quota check (unlimited PDFs by default)
-     - Increments PDF count in `Users` table (all-time total)
-     - Creates or updates bill record in `Bills` table for current month
-     - All PDFs are billed according to `price_per_pdf` from `Plans` table
+     - Checks if plan has `free_credits` and user has `free_credits_remaining > 0`
+     - If free credits available (`free_credits_remaining > 0`):
+       - Atomically decrements `free_credits_remaining` in `Users` table
+       - No billing charge (free credit used)
+     - If free credits exhausted (`free_credits_remaining <= 0`):
+       - Charges according to `price_per_pdf` from `Plans` table
+       - Creates or updates bill record in `Bills` table for current month
+     - Increments PDF count in `Users` table (all-time total) regardless of billing method
+     - **Note:** Due to concurrent requests, `free_credits_remaining` can go negative (e.g., `-1`, `-2`). The client should display `0` when the value is `<= 0`, and all subsequent requests will be billed.
 
 2. Account & Plan Management:
    - All users must have an account in DynamoDB `Users` table

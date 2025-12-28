@@ -5,7 +5,7 @@
  */
 
 const logger = require('../utils/logger');
-const { extractUserSub } = require('../middleware/auth');
+const { extractUserInfo } = require('../middleware/apiKeyAuth');
 const { validateRequestBody } = require('../services/validation');
 const {
   validateUserAndPlan,
@@ -33,16 +33,16 @@ async function handler(event) {
   let userSub = null;
 
   try {
-    // Extract user sub from JWT
-    userSub = await extractUserSub(event);
-    if (!userSub) {
+    // Extract user info from either JWT token or API key
+    const userInfo = await extractUserInfo(event);
+    if (!userInfo.userId && !userInfo.userSub) {
       return {
         statusCode: 401,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           error: {
             code: 'UNAUTHORIZED',
-            message: 'Missing or invalid JWT token',
+            message: 'Missing or invalid authentication. Provide either JWT token or API key.',
           },
         }),
       };
@@ -64,35 +64,77 @@ async function handler(event) {
 
     const { inputType, content, options } = validation.data;
 
-    // Validate user account and get plan
-    const { user, plan, error: userError } = await validateUserAndPlan(userSub);
-    if (userError) {
-      return userError;
+    // Get user account and plan
+    let user, plan, userId;
+    
+    if (userInfo.authMethod === 'api_key') {
+      // API key path: we already have userId, just need to get user account and plan
+      userId = userInfo.userId;
+      const { getUserAccount } = require('../services/business');
+      user = await getUserAccount(userInfo.userSub);
+      if (!user || !user.user_id) {
+        return {
+          statusCode: 403,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            error: {
+              code: 'ACCOUNT_NOT_FOUND',
+              message: 'User account not found',
+            },
+          }),
+        };
+      }
+      
+      // Get plan
+      const { getPlan } = require('../services/business');
+      const planId = user.plan_id || 'free-basic';
+      plan = await getPlan(planId);
+      if (!plan) {
+        plan = {
+          plan_id: 'free-basic',
+          name: 'Free Basic',
+          type: 'free',
+          monthly_quota: parseInt(process.env.FREE_TIER_QUOTA) || 100,
+          price_per_pdf: 0,
+          rate_limit_per_minute: parseInt(process.env.RATE_LIMIT_PER_MINUTE) || 20,
+          is_active: true,
+        };
+      }
+    } else {
+      // JWT path: use existing validateUserAndPlan
+      const validationResult = await validateUserAndPlan(userInfo.userSub);
+      if (validationResult.error) {
+        return validationResult.error;
+      }
+      user = validationResult.user;
+      plan = validationResult.plan;
+      
+      if (!user || !user.user_id) {
+        return {
+          statusCode: 403,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            error: {
+              code: 'ACCOUNT_NOT_FOUND',
+              message: 'User account not found',
+            },
+          }),
+        };
+      }
+      
+      userId = user.user_id;
     }
-
-    if (!user || !user.user_id) {
-      return {
-        statusCode: 403,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          error: {
-            code: 'ACCOUNT_NOT_FOUND',
-            message: 'User account not found',
-          },
-        }),
-      };
-    }
-
-    const userId = user.user_id;
+    
+    userSub = userInfo.userSub || user.user_sub;
 
     // Check rate limit
-    const rateLimitCheck = await checkRateLimit(userSub, userId, plan);
+    const rateLimitCheck = await checkRateLimit(userId, plan);
     if (!rateLimitCheck.allowed) {
       return rateLimitCheck.error;
     }
 
-    // Check quota
-    const quotaCheck = await checkQuota(userSub, user, plan);
+    // Check quota (checkQuota needs userSub for billing lookup)
+    const quotaCheck = await checkQuota(userSub || user.user_sub, user, plan);
     if (!quotaCheck.allowed) {
       return quotaCheck.error;
     }

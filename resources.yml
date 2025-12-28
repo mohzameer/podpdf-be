@@ -30,15 +30,15 @@ Resources:
   UserRateLimitsTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: ${self:custom.tableNames.${self:provider.stage}.userRateLimits}
+      TableName: ${self:custom.tableNames.${self:provider.stage}.userRateLimitsV2}
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
-        - AttributeName: user_sub
+        - AttributeName: user_id
           AttributeType: S
         - AttributeName: minute_timestamp
           AttributeType: S
       KeySchema:
-        - AttributeName: user_sub
+        - AttributeName: user_id
           KeyType: HASH
         - AttributeName: minute_timestamp
           KeyType: RANGE
@@ -50,8 +50,8 @@ Resources:
           Value: ${self:provider.stage}
         - Key: Service
           Value: podpdf
-      # Note: user_sub is used as partition key for direct lookups from JWT token
-      # This avoids needing a DynamoDB lookup to get user_id first
+      # Note: user_id is used as partition key for consistency across all tables
+      # We already have user_id after the user account lookup (required for quota checks, billing, etc.)
   
   JobDetailsTable:
     Type: AWS::DynamoDB::Table
@@ -111,6 +111,32 @@ Resources:
       KeySchema:
         - AttributeName: plan_id
           KeyType: HASH
+      Tags:
+        - Key: Stage
+          Value: ${self:provider.stage}
+        - Key: Service
+          Value: podpdf
+  
+  ApiKeysTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: ${self:custom.tableNames.${self:provider.stage}.apiKeys}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: api_key
+          AttributeType: S
+        - AttributeName: user_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: api_key
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: UserIdIndex
+          KeySchema:
+            - AttributeName: user_id
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
       Tags:
         - Key: Stage
           Value: ${self:provider.stage}
@@ -210,11 +236,14 @@ Resources:
           Required: false
           Mutable: true
       VerificationMessageTemplate:
-        DefaultEmailOption: CONFIRM_WITH_LINK
+        DefaultEmailOption: CONFIRM_WITH_CODE
         EmailSubject: "Verify your PodPDF account"
-        # Cognito requires the placeholder {####}; with CONFIRM_WITH_LINK it becomes a verification link
-        EmailMessage: "Please click the link below to verify your email address: {####}"
-      # LambdaConfig is automatically configured by Serverless Framework via cognitoUserPool event
+        # Cognito requires the placeholder {####}; with CONFIRM_WITH_CODE it becomes a verification code
+        EmailMessage: "Your verification code is: {####}"
+      LambdaConfig:
+        PostConfirmation: !Sub 
+          - 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${FunctionName}'
+          - FunctionName: podpdf-${self:provider.stage}-cognito-post-confirmation
       UserPoolTags:
         Stage: ${self:provider.stage}
         Service: podpdf
@@ -228,8 +257,23 @@ Resources:
       ExplicitAuthFlows:
         - ALLOW_USER_PASSWORD_AUTH
         - ALLOW_REFRESH_TOKEN_AUTH
+        - ALLOW_USER_SRP_AUTH
       SupportedIdentityProviders:
         - COGNITO
+      CallbackURLs:
+        - http://localhost:3000/auth/callback
+        - https://yourdomain.com/auth/callback
+      LogoutURLs:
+        - http://localhost:3000/auth/logout
+        - https://yourdomain.com/auth/logout
+      AllowedOAuthFlows:
+        - code
+        - implicit
+      AllowedOAuthScopes:
+        - email
+        - openid
+        - profile
+      AllowedOAuthFlowsUserPoolClient: true
       TokenValidityUnits:
         AccessToken: hours
         IdToken: hours
@@ -238,7 +282,20 @@ Resources:
       IdTokenValidity: 24
       RefreshTokenValidity: 30
   
-  # Lambda Permission is automatically created by Serverless Framework via cognitoUserPool event
+  CognitoUserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: podpdf-${self:provider.stage}-auth
+      UserPoolId: !Ref CognitoUserPool
+  
+  # Lambda Permission for Post Confirmation trigger
+  CognitoPostConfirmationLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: podpdf-${self:provider.stage}-cognito-post-confirmation
+      Principal: cognito-idp.amazonaws.com
+      Action: lambda:InvokeFunction
+      SourceArn: !GetAtt CognitoUserPool.Arn
 
 Outputs:
   CognitoUserPoolId:
@@ -252,6 +309,21 @@ Outputs:
     Value: !Ref CognitoUserPoolClient
     Export:
       Name: ${self:provider.stage}-CognitoUserPoolClientId
+  
+  CognitoUserPoolDomainName:
+    Description: Cognito User Pool Domain Name
+    Value: !Ref CognitoUserPoolDomain
+    Export:
+      Name: ${self:provider.stage}-CognitoUserPoolDomainName
+  
+  CognitoHostedUIURL:
+    Description: Cognito Hosted UI URL
+    Value: !Sub 
+      - 'https://${Domain}.auth.${Region}.amazoncognito.com'
+      - Domain: !Ref CognitoUserPoolDomain
+        Region: ${self:provider.region}
+    Export:
+      Name: ${self:provider.stage}-CognitoHostedUIURL
   
   UsersTableName:
     Description: Users DynamoDB Table Name

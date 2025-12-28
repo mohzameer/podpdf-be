@@ -21,9 +21,32 @@ const USERS_TABLE = process.env.USERS_TABLE;
  */
 async function handler(event) {
   try {
-    const userSub = event.request.userAttributes.sub;
-    const email = event.request.userAttributes.email;
-    const name = event.request.userAttributes.name || null;
+    // Log the full event structure for debugging
+    logger.info('Post Confirmation trigger received', {
+      triggerSource: event.triggerSource,
+      eventVersion: event.version,
+      region: event.region,
+      userPoolId: event.userPoolId,
+      userName: event.userName,
+      request: event.request ? {
+        userAttributes: event.request.userAttributes,
+        clientMetadata: event.request.clientMetadata,
+      } : null,
+    });
+
+    const userSub = event.request?.userAttributes?.sub;
+    const email = event.request?.userAttributes?.email;
+    const name = event.request?.userAttributes?.name || null;
+
+    if (!userSub || !email) {
+      logger.error('Missing required user attributes in Post Confirmation event', {
+        userSub: !!userSub,
+        email: !!email,
+        event: JSON.stringify(event),
+      });
+      // Return event to allow Cognito flow to continue even on error
+      return event;
+    }
 
     logger.info('Post Confirmation trigger invoked', {
       userSub,

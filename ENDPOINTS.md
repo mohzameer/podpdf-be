@@ -4,7 +4,7 @@ This document describes the public HTTP endpoints exposed by the PodPDF API.
 
 All endpoints are served via **Amazon API Gateway HTTP API (v2)** and backed by Lambda functions.
 
-**Note:** User account creation is handled automatically via a **Cognito Post Confirmation Lambda trigger**. When a user signs up via Amplify and confirms their email, the account record is automatically created in DynamoDB. The `POST /accounts` endpoint is available as a fallback for manual account creation if needed.
+**Note:** User account creation is handled automatically via a **Cognito Post Confirmation Lambda trigger**. When a user signs up via the `POST /signup` endpoint and confirms their email with the verification code, the account record is automatically created in DynamoDB. The `POST /accounts` endpoint is available as a fallback for manual account creation if needed.
 
 ---
 
@@ -15,16 +15,29 @@ Synchronous PDF generation for small documents that complete in under 30 seconds
 
 ### 1.1 Authentication
 
-- **Type:** JWT Bearer Token (Amazon Cognito)
-- **Header:**
+- **Type:** JWT Bearer Token (Amazon Cognito) **OR** API Key
+- **Headers (choose one):**
 
+**Option 1: JWT Token**
 ```http
 Authorization: Bearer <jwt_token>
 ```
 
+**Option 2: API Key**
+```http
+X-API-Key: <api_key>
+```
+or
+```http
+Authorization: Bearer <api_key>
+```
+
 **Requirements:**
-- Token must be valid and not expired.
+- Either a valid JWT token or a valid API key must be provided.
+- JWT token must be valid and not expired (if using JWT).
+- API key must be active and not revoked (if using API key).
 - User account must exist in `Users` (no anonymous or first-call auto-account creation).
+- **Note:** If both are provided, API key takes precedence.
 
 ### 1.2 HTTP Request
 
@@ -92,7 +105,8 @@ Authorization: Bearer <jwt_token>
 ### 1.3 Validation Rules (Summary)
 
 1. **Authentication**
-   - JWT must be present and valid, or request is rejected with **401** (`UNAUTHORIZED`).
+   - Either JWT token or API key must be present and valid, or request is rejected with **401** (`UNAUTHORIZED`).
+   - If API key is used, it must be active and not revoked.
 
 2. **Account**
    - `Users` record must exist for the `sub`; otherwise **403** (`ACCOUNT_NOT_FOUND`).
@@ -193,16 +207,29 @@ Asynchronous PDF generation with queueing, S3 storage, and webhook notifications
 
 ### 2.1 Authentication
 
-- **Type:** JWT Bearer Token (Amazon Cognito)
-- **Header:**
+- **Type:** JWT Bearer Token (Amazon Cognito) **OR** API Key
+- **Headers (choose one):**
 
+**Option 1: JWT Token**
 ```http
 Authorization: Bearer <jwt_token>
 ```
 
+**Option 2: API Key**
+```http
+X-API-Key: <api_key>
+```
+or
+```http
+Authorization: Bearer <api_key>
+```
+
 **Requirements:**
-- Token must be valid and not expired.
+- Either a valid JWT token or a valid API key must be provided.
+- JWT token must be valid and not expired (if using JWT).
+- API key must be active and not revoked (if using API key).
 - User account must exist in `Users`.
+- **Note:** If both are provided, API key takes precedence.
 
 ### 2.2 HTTP Request
 
@@ -691,7 +718,191 @@ curl -X POST https://api.example.com/accounts \
 
 ---
 
-## 6. `GET /accounts/me`
+## 6. `GET /plans` and `GET /plans/{plan_id}`
+
+**Description:**  
+Get plan details. Use `GET /plans` to list all active plans, or `GET /plans/{plan_id}` to get details for a specific plan.
+
+### 6.1 Authentication
+
+- **Type:** None (public endpoint)
+- **Note:** This endpoint does not require authentication. Plan details are public information.
+
+### 6.2 HTTP Request
+
+**Method:** `GET`  
+**Path:** `/plans` or `/plans/{plan_id}`  
+**Path Parameters (for specific plan):**
+- `plan_id` (string, required) - Plan identifier (e.g., `"free-basic"`, `"paid-standard"`)
+
+### 6.3 Response
+
+#### 6.3.1 Success Response - List All Plans (200 OK)
+
+```json
+{
+  "plans": [
+    {
+      "plan_id": "free-basic",
+      "name": "Free Basic",
+      "type": "free",
+      "monthly_quota": 100,
+      "price_per_pdf": 0,
+      "rate_limit_per_minute": 20,
+      "description": "Free tier with 100 PDFs all-time quota (not monthly - cumulative, does not reset). Rate limit: 20 requests per minute.",
+      "is_active": true
+    },
+    {
+      "plan_id": "paid-standard",
+      "name": "Paid Standard",
+      "type": "paid",
+      "monthly_quota": null,
+      "price_per_pdf": 0.005,
+      "rate_limit_per_minute": null,
+      "description": "Paid plan with unlimited PDFs. Price: $0.005 per PDF. Unlimited rate limit.",
+      "is_active": true
+    }
+  ],
+  "count": 2
+}
+```
+
+**Fields:**
+- `plans` (array) - List of active plans, sorted by type (free first) then by name
+- `count` (number) - Number of active plans returned
+
+**Plan Object Fields:**
+- `plan_id` (string) - Unique plan identifier
+- `name` (string) - Human-readable plan name
+- `type` (string) - Plan type: `"free"` or `"paid"`
+- `monthly_quota` (number|null) - Number of PDFs included per month for free plans, `null` for unlimited paid plans
+- `price_per_pdf` (number) - Price per PDF in USD (0 for free plans)
+- `rate_limit_per_minute` (number|null) - Per-user rate limit in requests per minute, `null` for unlimited
+- `description` (string|null) - Plan description
+- `is_active` (boolean) - Whether the plan is active and available
+
+#### 6.3.2 Success Response - Get Specific Plan (200 OK)
+
+```json
+{
+  "plan": {
+    "plan_id": "free-basic",
+    "name": "Free Basic",
+    "type": "free",
+    "monthly_quota": 100,
+    "price_per_pdf": 0,
+    "rate_limit_per_minute": 20,
+    "description": "Free tier with 100 PDFs all-time quota (not monthly - cumulative, does not reset). Rate limit: 20 requests per minute.",
+    "is_active": true
+  }
+}
+```
+
+**Fields:**
+- `plan` (object) - Plan details (same structure as plan objects in list response)
+
+#### 6.3.3 Error Responses
+
+**404 Not Found - Plan Not Found**
+```json
+{
+  "error": {
+    "code": "NOT_FOUND",
+    "message": "Plan not found: invalid-plan-id"
+  }
+}
+```
+
+**500 Internal Server Error**
+```json
+{
+  "error": {
+    "code": "INTERNAL_SERVER_ERROR",
+    "message": "Internal server error"
+  }
+}
+```
+
+### 6.4 Example Requests
+
+**List All Plans:**
+```bash
+curl -X GET https://api.podpdf.com/plans
+```
+
+**Get Specific Plan:**
+```bash
+curl -X GET https://api.podpdf.com/plans/free-basic
+```
+
+### 6.5 Example Responses
+
+**List All Plans:**
+```json
+{
+  "plans": [
+    {
+      "plan_id": "free-basic",
+      "name": "Free Basic",
+      "type": "free",
+      "monthly_quota": 100,
+      "price_per_pdf": 0,
+      "rate_limit_per_minute": 20,
+      "description": "Free tier with 100 PDFs all-time quota (not monthly - cumulative, does not reset). Rate limit: 20 requests per minute.",
+      "is_active": true
+    },
+    {
+      "plan_id": "paid-standard",
+      "name": "Paid Standard",
+      "type": "paid",
+      "monthly_quota": null,
+      "price_per_pdf": 0.005,
+      "rate_limit_per_minute": null,
+      "description": "Paid plan with unlimited PDFs. Price: $0.005 per PDF. Unlimited rate limit.",
+      "is_active": true
+    }
+  ],
+  "count": 2
+}
+```
+
+**Get Specific Plan:**
+```json
+{
+  "plan": {
+    "plan_id": "paid-standard",
+    "name": "Paid Standard",
+    "type": "paid",
+    "monthly_quota": null,
+    "price_per_pdf": 0.005,
+    "rate_limit_per_minute": null,
+    "description": "Paid plan with unlimited PDFs. Price: $0.005 per PDF. Unlimited rate limit.",
+    "is_active": true
+  }
+}
+```
+
+### 6.6 Usage Notes
+
+- **Public Endpoint:** This endpoint does not require authentication. Plan details are public information useful for displaying pricing and features in the frontend.
+- **Active Plans Only:** The list endpoint (`GET /plans`) only returns plans where `is_active` is `true` (or not set, which defaults to `true`).
+- **Sorting:** Plans are sorted by type (free plans first) then alphabetically by name.
+- **Null Values:** Some fields may be `null`:
+  - `monthly_quota`: `null` for paid plans (unlimited)
+  - `rate_limit_per_minute`: `null` for paid plans (unlimited) or plans without rate limits
+  - `description`: `null` if no description is set
+- **Plan Types:**
+  - `"free"`: Free tier plans with quota limits
+  - `"paid"`: Paid plans with per-PDF pricing
+
+**Status Codes:**
+- `200 OK` – Success
+- `404 Not Found` – Plan not found (for specific plan endpoint)
+- `500 Internal Server Error` – Server-side failure
+
+---
+
+## 8. `GET /accounts/me`
 
 **Description:**  
 Get information about the authenticated user's account.
@@ -709,7 +920,7 @@ Authorization: Bearer <jwt_token>
 - Token must be valid and not expired.
 - User account must exist in `Users`.
 
-### 6.2 HTTP Request
+### 14.2 HTTP Request
 
 **Method:** `GET`  
 **Path:** `/accounts/me`
@@ -768,7 +979,7 @@ Authorization: Bearer <jwt_token>
 
 ---
 
-## 7. `GET /accounts/me/billing`
+## 9. `GET /accounts/me/billing`
 
 **Description:**  
 Get current month's billing summary for the authenticated user. Returns accumulated billing amount and PDF count for the current month only.
@@ -901,7 +1112,7 @@ curl -X GET https://api.podpdf.com/accounts/me/billing \
 
 ---
 
-## 8. `GET /accounts/me/bills`
+## 10. `GET /accounts/me/bills`
 
 **Description:**  
 Get a list of all bills/invoices for the authenticated user. Returns all monthly billing records sorted by month (most recent first).
@@ -1054,7 +1265,7 @@ curl -X GET https://api.podpdf.com/accounts/me/bills \
 
 ---
 
-## 9. `PUT /accounts/me/upgrade`
+## 11. `PUT /accounts/me/upgrade`
 
 **Description:**  
 Upgrade a user account from free tier to a paid plan. This endpoint clears the `quota_exceeded` flag and updates the user's plan.
@@ -1225,7 +1436,7 @@ curl -X PUT https://api.podpdf.com/accounts/me/upgrade \
 
 ---
 
-## 10. `PUT /accounts/me/webhook`
+## 12. `PUT /accounts/me/webhook`
 
 **Description:**  
 Configure user's default webhook URL for long job notifications.
@@ -1294,7 +1505,7 @@ Authorization: Bearer <jwt_token>
 
 ---
 
-## 11. `DELETE /accounts/me`
+## 13. `DELETE /accounts/me`
 
 **Description:**  
 Delete the authenticated user's account and all associated data.
@@ -1338,7 +1549,204 @@ Authorization: Bearer <jwt_token>
 
 ---
 
-## 11. Health Check (Optional, Internal)
+## 14. API Key Management
+
+The following endpoints allow users to create, list, and revoke API keys for programmatic access to the `/quickjob` and `/longjob` endpoints.
+
+**Important:** All API key management endpoints require JWT authentication (not API key). This prevents API key self-revocation loops and ensures only authenticated users can manage their keys.
+
+---
+
+### 14.1 `POST /accounts/me/api-keys`
+
+**Description:**  
+Create a new API key for the authenticated user. The full API key is returned only once on creation. Store it securely as it cannot be retrieved again.
+
+#### 14.1.1 Authentication
+
+- **Type:** JWT Bearer Token (Amazon Cognito) - **Required**
+- **Header:**
+
+```http
+Authorization: Bearer <jwt_token>
+```
+
+**Requirements:**
+- Token must be valid and not expired.
+- User account must exist in `Users`.
+- **Note:** API keys cannot be used to authenticate to this endpoint.
+
+#### 14.1.2 HTTP Request
+
+**Method:** `POST`  
+**Path:** `/accounts/me/api-keys`  
+**Content-Type:** `application/json`
+
+**Request Body:**
+```json
+{
+  "name": "Production API Key"
+}
+```
+
+**Fields:**
+- `name` (string, optional): A descriptive name for the API key (e.g., "Production", "Development", "Mobile App"). If not provided, defaults to `null`.
+
+#### 14.1.3 Response
+
+**Success Response (201 Created):**
+```json
+{
+  "api_key": "pk_live_abc123xyz...",
+  "name": "Production API Key",
+  "created_at": "2025-12-21T10:00:00Z",
+  "message": "API key created successfully. Store this key securely - it will not be shown again."
+}
+```
+
+**Fields:**
+- `api_key` (string): The full API key. **This is the only time the full key is returned.** Store it securely.
+- `name` (string, optional): The name assigned to the API key.
+- `created_at` (string): ISO 8601 timestamp when the key was created.
+- `message` (string): Reminder message about storing the key securely.
+
+**API Key Format:**
+- Production keys: `pk_live_<random_base64url_string>` (43 characters after prefix)
+- Development keys: `pk_test_<random_base64url_string>` (43 characters after prefix)
+
+**Error Responses:**
+- `400 Bad Request` – Invalid JSON in request body.
+- `401 Unauthorized` – Missing or invalid JWT token.
+- `403 Forbidden` – Account not found (`ACCOUNT_NOT_FOUND`).
+- `500 Internal Server Error` – Server-side failure.
+
+---
+
+### 14.2 `GET /accounts/me/api-keys`
+
+**Description:**  
+List all API keys for the authenticated user. The full API key is never returned in the list (only a prefix is shown for identification).
+
+#### 14.2.1 Authentication
+
+- **Type:** JWT Bearer Token (Amazon Cognito) - **Required**
+- **Header:**
+
+```http
+Authorization: Bearer <jwt_token>
+```
+
+**Requirements:**
+- Token must be valid and not expired.
+- User account must exist in `Users`.
+- **Note:** API keys cannot be used to authenticate to this endpoint.
+
+#### 14.2.2 HTTP Request
+
+**Method:** `GET`  
+**Path:** `/accounts/me/api-keys`
+
+#### 14.2.3 Response
+
+**Success Response (200 OK):**
+```json
+{
+  "api_keys": [
+    {
+      "api_key_prefix": "pk_live_abc1...",
+      "name": "Production API Key",
+      "is_active": true,
+      "created_at": "2025-12-21T10:00:00Z",
+      "last_used_at": "2025-12-21T15:30:00Z",
+      "revoked_at": null
+    },
+    {
+      "api_key_prefix": "pk_test_xyz9...",
+      "name": "Development API Key",
+      "is_active": false,
+      "created_at": "2025-12-20T08:00:00Z",
+      "last_used_at": "2025-12-20T12:00:00Z",
+      "revoked_at": "2025-12-21T09:00:00Z"
+    }
+  ],
+  "count": 2
+}
+```
+
+**Fields:**
+- `api_keys` (array): List of API keys, sorted by `created_at` descending (newest first).
+  - `api_key_prefix` (string): First 12 characters of the API key followed by `...` (for identification only).
+  - `name` (string, optional): Descriptive name for the API key.
+  - `is_active` (boolean): Whether the API key is active (`false` if revoked).
+  - `created_at` (string): ISO 8601 timestamp when the key was created.
+  - `last_used_at` (string, optional): ISO 8601 timestamp when the key was last used (null if never used).
+  - `revoked_at` (string, optional): ISO 8601 timestamp when the key was revoked (null if active).
+- `count` (number): Total number of API keys (active and revoked).
+
+**Error Responses:**
+- `401 Unauthorized` – Missing or invalid JWT token.
+- `403 Forbidden` – Account not found (`ACCOUNT_NOT_FOUND`).
+- `500 Internal Server Error` – Server-side failure.
+
+---
+
+### 14.3 `DELETE /accounts/me/api-keys/{api_key_id}`
+
+**Description:**  
+Revoke an API key. The key is immediately deactivated and cannot be used for authentication. This action cannot be undone, but you can create a new API key if needed.
+
+#### 14.3.1 Authentication
+
+- **Type:** JWT Bearer Token (Amazon Cognito) - **Required**
+- **Header:**
+
+```http
+Authorization: Bearer <jwt_token>
+```
+
+**Requirements:**
+- Token must be valid and not expired.
+- User account must exist in `Users`.
+- **Note:** API keys cannot be used to authenticate to this endpoint.
+
+#### 14.3.2 HTTP Request
+
+**Method:** `DELETE`  
+**Path:** `/accounts/me/api-keys/{api_key_id}`
+
+**Path Parameters:**
+- `api_key_id` (string, required): The full API key to revoke (e.g., `pk_live_abc123xyz...`).
+
+#### 14.3.3 Response
+
+**Success Response (200 OK):**
+```json
+{
+  "message": "API key revoked successfully",
+  "api_key_prefix": "pk_live_abc1...",
+  "revoked_at": "2025-12-21T10:00:00Z"
+}
+```
+
+**Fields:**
+- `message` (string): Confirmation message.
+- `api_key_prefix` (string): First 12 characters of the revoked API key followed by `...`.
+- `revoked_at` (string): ISO 8601 timestamp when the key was revoked.
+
+**Error Responses:**
+- `401 Unauthorized` – Missing or invalid JWT token.
+- `403 Forbidden` – Account not found (`ACCOUNT_NOT_FOUND`) or API key does not belong to authenticated user.
+- `404 Not Found` – API key not found.
+- `500 Internal Server Error` – Server-side failure.
+
+**Notes:**
+- Revoked API keys cannot be reactivated. Create a new API key if needed.
+- Revoked keys remain in the list (with `is_active: false`) for audit purposes.
+- The API key must belong to the authenticated user. Attempting to revoke another user's key will result in a `403 Forbidden` error.
+
+---
+
+## 15. Health Check (Optional, Internal)
 
 > **Note:** This endpoint is optional and not required for the public API. It is recommended for internal monitoring.
 
@@ -1369,25 +1777,339 @@ Implementation of `/health` is left to the service owner and may be internal-onl
 
 ---
 
-## 12. `POST /signin` (Testing Only)
+## 16. `POST /signup`
 
 **Description:**  
-⚠️ **Note:** This endpoint is for **testing purposes only**. Production frontend should use AWS Amplify Auth for authentication.
+Create a new user account in Cognito. After signup, the user will receive a verification code via email. Once they confirm their email with the code, the **Post Confirmation Lambda trigger** will automatically create the DynamoDB account record. No additional API call is needed to create the account record.
 
+### 17.1 Authentication
+
+- **Type:** None (public endpoint)
+- **Note:** This endpoint does not require authentication. It is used to create new user accounts.
+
+### 12.2 HTTP Request
+
+**Method:** `POST`  
+**Path:** `/signup`  
+**Content-Type:** `application/json`
+
+#### 12.2.1 Request Body
+
+```json
+{
+  "email": "user@example.com",
+  "password": "SecurePassword123!",
+  "name": "John Doe"
+}
+```
+
+**Fields:**
+- `email` (string, required) - User's email address (used as username in Cognito)
+- `password` (string, required) - User's password (must meet Cognito password requirements: minimum 8 characters, uppercase, lowercase, numbers, and symbols)
+- `name` (string, optional) - User's display name
+
+### 12.3 HTTP Response
+
+#### 12.3.1 Success Response (201 Created)
+
+```json
+{
+  "message": "User created successfully. Please check your email for verification code.",
+  "userSub": "12345678-1234-1234-1234-123456789012",
+  "email": "user@example.com",
+  "requiresConfirmation": true
+}
+```
+
+**Fields:**
+- `message` (string) - Success message
+- `userSub` (string) - Cognito user identifier (sub claim)
+- `email` (string) - User's email address
+- `requiresConfirmation` (boolean) - Always `true`; user must confirm email with verification code
+
+**Next Steps:**
+1. User receives verification code via email
+2. User confirms email using the verification code (via `/signin` endpoint with confirmation, or via Cognito Hosted UI)
+3. **Post Confirmation trigger automatically creates DynamoDB account record** - no additional API call needed
+4. User can then sign in using `/signin` endpoint
+
+#### 12.3.2 Error Responses
+
+**400 Bad Request - Missing Fields**
+```json
+{
+  "error": "BadRequest",
+  "message": "Missing required fields: email and password"
+}
+```
+
+**400 Bad Request - Invalid Email Format**
+```json
+{
+  "error": "BadRequest",
+  "message": "Invalid email format"
+}
+```
+
+**400 Bad Request - Password Too Short**
+```json
+{
+  "error": "BadRequest",
+  "message": "Password must be at least 8 characters long"
+}
+```
+
+**400 Bad Request - Username Already Exists**
+```json
+{
+  "error": "BadRequest",
+  "message": "An account with this email already exists"
+}
+```
+
+**400 Bad Request - Invalid Password**
+```json
+{
+  "error": "BadRequest",
+  "message": "Password does not meet requirements. Password must be at least 8 characters and contain uppercase, lowercase, numbers, and symbols."
+}
+```
+
+**429 Too Many Requests**
+```json
+{
+  "error": "TooManyRequests",
+  "message": "Too many sign-up attempts. Please try again later."
+}
+```
+
+**500 Internal Server Error**
+```json
+{
+  "error": "InternalServerError",
+  "message": "Sign-up failed. Please try again later."
+}
+```
+
+### 12.4 Example Request
+
+```bash
+curl -X POST https://api.podpdf.com/signup \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "user@example.com",
+    "password": "SecurePassword123!",
+    "name": "John Doe"
+  }'
+```
+
+### 12.5 Example Response
+
+```json
+{
+  "message": "User created successfully. Please check your email for verification code.",
+  "userSub": "12345678-1234-1234-1234-123456789012",
+  "email": "user@example.com",
+  "requiresConfirmation": true
+}
+```
+
+### 12.6 Usage Notes
+
+- **Password Requirements:** Password must be at least 8 characters and contain:
+  - At least one uppercase letter
+  - At least one lowercase letter
+  - At least one number
+  - At least one symbol
+- **Email Verification:** After signup, user receives a verification code via email. They must confirm their email before they can sign in.
+- **Automatic Account Creation:** Once the user confirms their email with the verification code, the **Post Confirmation Lambda trigger** automatically creates the DynamoDB account record. No additional API call to `/accounts` is needed.
+- **Account Record:** The account record is created with:
+  - `plan_id`: `"free-basic"` (default free plan)
+  - `account_status`: `"free"`
+  - `total_pdf_count`: `0`
+  - `quota_exceeded`: `false`
+- **Sign In:** After email confirmation, user can sign in using the `/signin` endpoint.
+
+**Status Codes:**
+- `201 Created` – User created successfully (requires email confirmation)
+- `400 Bad Request` – Missing fields, invalid email, weak password, or username already exists
+- `429 Too Many Requests` – Too many sign-up attempts
+- `500 Internal Server Error` – Sign-up service error
+
+---
+
+## 17. `POST /confirm-signup`
+
+**Description:**  
+Confirm user email with the verification code received via email. After successful confirmation, the **Post Confirmation Lambda trigger** will automatically create the DynamoDB account record. Once confirmed, the user can sign in using the `/signin` endpoint.
+
+### 13.1 Authentication
+
+- **Type:** None (public endpoint)
+- **Note:** This endpoint does not require authentication. It is used to confirm email addresses after signup.
+
+### 14.2 HTTP Request
+
+**Method:** `POST`  
+**Path:** `/confirm-signup`  
+**Content-Type:** `application/json`
+
+#### 13.2.1 Request Body
+
+```json
+{
+  "email": "user@example.com",
+  "confirmationCode": "123456"
+}
+```
+
+**Fields:**
+- `email` (string, required) - User's email address (same email used in signup)
+- `confirmationCode` (string, required) - 6-digit verification code received via email
+
+### 14.3 HTTP Response
+
+#### 13.3.1 Success Response (200 OK)
+
+```json
+{
+  "message": "Email confirmed successfully. Your account has been created. You can now sign in.",
+  "email": "user@example.com"
+}
+```
+
+**Fields:**
+- `message` (string) - Success message
+- `email` (string) - Confirmed email address
+
+**What Happens Next:**
+1. **Post Confirmation trigger automatically creates DynamoDB account record** - no additional API call needed
+2. Account record is created with:
+   - `plan_id`: `"free-basic"` (default free plan)
+   - `account_status`: `"free"`
+   - `total_pdf_count`: `0`
+   - `quota_exceeded`: `false`
+3. User can now sign in using the `/signin` endpoint
+
+#### 13.3.2 Error Responses
+
+**400 Bad Request - Missing Fields**
+```json
+{
+  "error": "BadRequest",
+  "message": "Missing required fields: email and confirmationCode"
+}
+```
+
+**400 Bad Request - Invalid Email Format**
+```json
+{
+  "error": "BadRequest",
+  "message": "Invalid email format"
+}
+```
+
+**400 Bad Request - Invalid Code**
+```json
+{
+  "error": "BadRequest",
+  "message": "Invalid verification code. Please check your email and try again."
+}
+```
+
+**400 Bad Request - Expired Code**
+```json
+{
+  "error": "BadRequest",
+  "message": "Verification code has expired. Please request a new code."
+}
+```
+
+**400 Bad Request - Already Confirmed**
+```json
+{
+  "error": "BadRequest",
+  "message": "User is already confirmed or does not exist."
+}
+```
+
+**400 Bad Request - User Not Found**
+```json
+{
+  "error": "BadRequest",
+  "message": "User not found. Please sign up first."
+}
+```
+
+**429 Too Many Requests**
+```json
+{
+  "error": "TooManyRequests",
+  "message": "Too many confirmation attempts. Please try again later."
+}
+```
+
+**500 Internal Server Error**
+```json
+{
+  "error": "InternalServerError",
+  "message": "Confirmation failed. Please try again later."
+}
+```
+
+### 15.4 Example Request
+
+```bash
+curl -X POST https://api.podpdf.com/confirm-signup \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "user@example.com",
+    "confirmationCode": "123456"
+  }'
+```
+
+### 15.5 Example Response
+
+```json
+{
+  "message": "Email confirmed successfully. Your account has been created. You can now sign in.",
+  "email": "user@example.com"
+}
+```
+
+### 15.6 Usage Notes
+
+- **Verification Code:** The code is a 6-digit number sent via email after signup. It expires after a certain period (typically 24 hours).
+- **Automatic Account Creation:** Once the email is confirmed, the **Post Confirmation Lambda trigger** automatically creates the DynamoDB account record. No additional API call to `/accounts` is needed.
+- **One-Time Use:** Each verification code can only be used once. If you need a new code, you may need to resend it (if a resend endpoint is available).
+- **Sign In:** After successful confirmation, the user can immediately sign in using the `/signin` endpoint with their email and password.
+- **Already Confirmed:** If the user is already confirmed, the endpoint will return an error. They can proceed directly to sign in.
+
+**Status Codes:**
+- `200 OK` – Email confirmed successfully, account record created automatically
+- `400 Bad Request` – Missing fields, invalid email, invalid/expired code, or user already confirmed
+- `429 Too Many Requests` – Too many confirmation attempts
+- `500 Internal Server Error` – Confirmation service error
+
+---
+
+## 18. `POST /signin`
+
+**Description:**  
 Authenticate a user with Cognito and return JWT tokens (ID token, access token, refresh token).
 
-### 6.1 Authentication
+### 14.1 Authentication
 
 - **Type:** None (public endpoint)
 - **Note:** This endpoint does not require authentication. It is used to obtain authentication tokens.
 
-### 6.2 HTTP Request
+### 14.2 HTTP Request
 
 **Method:** `POST`  
 **Path:** `/signin`  
 **Content-Type:** `application/json`
 
-#### 6.2.1 Request Body
+#### 14.2.1 Request Body
 
 ```json
 {
@@ -1400,9 +2122,9 @@ Authenticate a user with Cognito and return JWT tokens (ID token, access token, 
 - `email` (string, required) - User's email address (used as username in Cognito)
 - `password` (string, required) - User's password
 
-### 6.3 HTTP Response
+### 14.3 HTTP Response
 
-#### 6.3.1 Success Response (200 OK)
+#### 14.3.1 Success Response (200 OK)
 
 ```json
 {
@@ -1424,7 +2146,7 @@ Authenticate a user with Cognito and return JWT tokens (ID token, access token, 
   - `refreshToken` (string) - Refresh token (for obtaining new tokens)
   - `expiresIn` (number) - Token expiration time in seconds
 
-#### 6.3.2 Error Responses
+#### 14.3.2 Error Responses
 
 **400 Bad Request - Missing Fields**
 ```json
@@ -1466,7 +2188,7 @@ Authenticate a user with Cognito and return JWT tokens (ID token, access token, 
 }
 ```
 
-### 6.4 Example Request
+### 15.4 Example Request
 
 ```bash
 curl -X POST https://api.podpdf.com/signin \
@@ -1477,7 +2199,7 @@ curl -X POST https://api.podpdf.com/signin \
   }'
 ```
 
-### 6.5 Example Response
+### 15.5 Example Response
 
 ```json
 {
@@ -1491,11 +2213,10 @@ curl -X POST https://api.podpdf.com/signin \
 }
 ```
 
-### 6.6 Usage Notes
+### 14.6 Usage Notes
 
-- **Testing Only:** This endpoint is provided for testing purposes. Production applications should use AWS Amplify Auth SDK.
 - **Token Usage:** Use the `accessToken` in the `Authorization` header for authenticated API requests: `Authorization: Bearer <accessToken>`
-- **Token Expiration:** Tokens expire after 24 hours (as configured in Cognito). Use the `refreshToken` to obtain new tokens.
+- **Token Expiration:** Tokens expire after 24 hours (as configured in Cognito). Use the `/refresh` endpoint with the `refreshToken` to obtain new tokens.
 - **Rate Limiting:** Cognito enforces rate limits on authentication attempts. Too many failed attempts will result in a 429 error.
 
 **Status Codes:**
@@ -1504,6 +2225,138 @@ curl -X POST https://api.podpdf.com/signin \
 - `401 Unauthorized` – Invalid credentials
 - `429 Too Many Requests` – Too many sign-in attempts
 - `500 Internal Server Error` – Authentication service error
+
+---
+
+## 19. `POST /refresh`
+
+**Description:**  
+Refresh authentication tokens using a refresh token. Returns new ID token and access token.
+
+### 15.1 Authentication
+
+- **Type:** None (public endpoint)
+- **Note:** This endpoint does not require authentication. It is used to refresh expired tokens.
+
+### 15.2 HTTP Request
+
+**Method:** `POST`  
+**Path:** `/refresh`  
+**Content-Type:** `application/json`
+
+#### 15.2.1 Request Body
+
+```json
+{
+  "refreshToken": "eyJjdHkiOiJKV1QiLCJlbmMiOiJBMjU2R0NNIn0..."
+}
+```
+
+**Fields:**
+- `refreshToken` (string, required) - Refresh token obtained from `/signin` endpoint
+
+### 14.3 HTTP Response
+
+#### 13.3.1 Success Response (200 OK)
+
+```json
+{
+  "message": "Token refresh successful",
+  "tokens": {
+    "idToken": "eyJraWQiOiJcL0t...",
+    "accessToken": "eyJraWQiOiJcL0t...",
+    "expiresIn": 86400
+  }
+}
+```
+
+**Fields:**
+- `message` (string) - Success message
+- `tokens` (object) - New authentication tokens
+  - `idToken` (string) - JWT ID token (contains user claims)
+  - `accessToken` (string) - JWT access token (for API authorization)
+  - `expiresIn` (number) - Token expiration time in seconds
+
+**Note:** The refresh token is not returned in the response. The same refresh token can be reused until it expires (30 days as configured in Cognito).
+
+#### 15.3.2 Error Responses
+
+**400 Bad Request - Missing Field**
+```json
+{
+  "error": "BadRequest",
+  "message": "Missing required field: refreshToken"
+}
+```
+
+**400 Bad Request - Invalid Type**
+```json
+{
+  "error": "BadRequest",
+  "message": "refreshToken must be a string"
+}
+```
+
+**401 Unauthorized - Invalid Refresh Token**
+```json
+{
+  "error": "Unauthorized",
+  "message": "Invalid or expired refresh token"
+}
+```
+
+**429 Too Many Requests**
+```json
+{
+  "error": "TooManyRequests",
+  "message": "Too many refresh attempts. Please try again later."
+}
+```
+
+**500 Internal Server Error**
+```json
+{
+  "error": "InternalServerError",
+  "message": "Token refresh failed. Please try again later."
+}
+```
+
+### 15.4 Example Request
+
+```bash
+curl -X POST https://api.podpdf.com/refresh \
+  -H "Content-Type: application/json" \
+  -d '{
+    "refreshToken": "eyJjdHkiOiJKV1QiLCJlbmMiOiJBMjU2R0NNIn0..."
+  }'
+```
+
+### 15.5 Example Response
+
+```json
+{
+  "message": "Token refresh successful",
+  "tokens": {
+    "idToken": "eyJraWQiOiJcL0t...",
+    "accessToken": "eyJraWQiOiJcL0t...",
+    "expiresIn": 86400
+  }
+}
+```
+
+### 15.6 Usage Notes
+
+- **Token Refresh:** Use this endpoint when your access token or ID token expires (after 24 hours). The refresh token is valid for 30 days.
+- **Token Usage:** Use the new `accessToken` in the `Authorization` header for authenticated API requests: `Authorization: Bearer <accessToken>`
+- **Refresh Token Reuse:** The same refresh token can be used multiple times until it expires. You do not receive a new refresh token on each refresh.
+- **Rate Limiting:** Cognito enforces rate limits on refresh attempts. Too many attempts will result in a 429 error.
+
+**Status Codes:**
+- `200 OK` – Token refresh successful
+- `400 Bad Request` – Missing or invalid refresh token field
+- `401 Unauthorized` – Invalid or expired refresh token
+- `429 Too Many Requests` – Too many refresh attempts
+- `500 Internal Server Error` – Token refresh service error
 
 ---
 

@@ -20,11 +20,12 @@ provider:
     MAX_INPUT_SIZE_MB: 5
     QUICKJOB_TIMEOUT_SECONDS: 30
     USERS_TABLE: ${self:custom.tableNames.${self:provider.stage}.users}
-    USER_RATE_LIMITS_TABLE: ${self:custom.tableNames.${self:provider.stage}.userRateLimits}
+    USER_RATE_LIMITS_TABLE: ${self:custom.tableNames.${self:provider.stage}.userRateLimitsV2}
     JOB_DETAILS_TABLE: ${self:custom.tableNames.${self:provider.stage}.jobDetails}
     ANALYTICS_TABLE: ${self:custom.tableNames.${self:provider.stage}.analytics}
     PLANS_TABLE: ${self:custom.tableNames.${self:provider.stage}.plans}
     BILLS_TABLE: ${self:custom.tableNames.${self:provider.stage}.bills}
+    API_KEYS_TABLE: ${self:custom.tableNames.${self:provider.stage}.apiKeys}
     PDFS_BUCKET: podpdf-${self:provider.stage}-pdfs
     LONGJOB_QUEUE_URL: !Ref LongJobQueue
     COGNITO_USER_POOL_CLIENT_ID: !Ref CognitoUserPoolClient
@@ -74,14 +75,16 @@ provider:
             - dynamodb:BatchWriteItem
           Resource:
             - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.users}
-            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.userRateLimits}
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.userRateLimitsV2}
             - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.jobDetails}
             - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.analytics}
             - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.plans}
             - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.bills}
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.apiKeys}
             - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.users}/index/*
             - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.jobDetails}/index/*
             - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.bills}/index/*
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.apiKeys}/index/*
         - Effect: Allow
           Action:
             - cognito-idp:GetUser
@@ -115,7 +118,7 @@ functions:
       - httpApi:
           path: /quickjob
           method: post
-          authorizer: cognitoAuthorizer
+          # No authorizer - supports both JWT and API key authentication
   
   longjob:
     handler: src/handlers/longjob.handler
@@ -126,7 +129,7 @@ functions:
       - httpApi:
           path: /longjob
           method: post
-          authorizer: cognitoAuthorizer
+          # No authorizer - supports both JWT and API key authentication
   
   longjob-processor:
     handler: src/handlers/longjob-processor.handler
@@ -149,6 +152,38 @@ functions:
           path: /jobs/{job_id}
           method: get
           authorizer: cognitoAuthorizer
+  
+  plans:
+    handler: src/handlers/plans.handler
+    events:
+      - httpApi:
+          path: /plans
+          method: get
+          # No authorizer - public endpoint for viewing plans
+      - httpApi:
+          path: /plans/{plan_id}
+          method: get
+          # No authorizer - public endpoint for viewing plan details
+    environment:
+      PLANS_TABLE: ${self:custom.tableNames.${self:provider.stage}.plans}
+  
+  api-keys:
+    handler: src/handlers/api-keys.handler
+    events:
+      - httpApi:
+          path: /accounts/me/api-keys
+          method: post
+          authorizer: cognitoAuthorizer
+      - httpApi:
+          path: /accounts/me/api-keys
+          method: get
+          authorizer: cognitoAuthorizer
+      - httpApi:
+          path: /accounts/me/api-keys/{api_key_id}
+          method: delete
+          authorizer: cognitoAuthorizer
+    environment:
+      API_KEYS_TABLE: ${self:custom.tableNames.${self:provider.stage}.apiKeys}
   
   accounts:
     handler: src/handlers/accounts.handler
@@ -189,9 +224,27 @@ functions:
           path: /health
           method: get
   
+  signup:
+    handler: src/handlers/signup.handler
+    events: ${self:custom.stages.${self:provider.stage}.signupEvents}
+    environment:
+      COGNITO_USER_POOL_CLIENT_ID: !Ref CognitoUserPoolClient
+  
+  confirm-signup:
+    handler: src/handlers/confirm-signup.handler
+    events: ${self:custom.stages.${self:provider.stage}.confirmSignupEvents}
+    environment:
+      COGNITO_USER_POOL_CLIENT_ID: !Ref CognitoUserPoolClient
+  
   signin:
     handler: src/handlers/signin.handler
     events: ${self:custom.stages.${self:provider.stage}.signinEvents}
+    environment:
+      COGNITO_USER_POOL_CLIENT_ID: !Ref CognitoUserPoolClient
+  
+  refresh:
+    handler: src/handlers/refresh.handler
+    events: ${self:custom.stages.${self:provider.stage}.refreshEvents}
     environment:
       COGNITO_USER_POOL_CLIENT_ID: !Ref CognitoUserPoolClient
   
@@ -209,18 +262,52 @@ custom:
     dev:
       logLevel: debug
       maxPages: 2
+      signupEvents:
+        - httpApi:
+            path: /signup
+            method: post
+            # No authorizer - public endpoint
+      confirmSignupEvents:
+        - httpApi:
+            path: /confirm-signup
+            method: post
+            # No authorizer - public endpoint
       signinEvents:
         - httpApi:
             path: /signin
             method: post
-            # No authorizer - public endpoint for testing
+            # No authorizer - public endpoint
+      refreshEvents:
+        - httpApi:
+            path: /refresh
+            method: post
+            # No authorizer - public endpoint
       cors:
         allowedOrigins:
           - '*'
     prod:
       logLevel: info
       maxPages: 100
-      signinEvents: []
+      signupEvents:
+        - httpApi:
+            path: /signup
+            method: post
+            # No authorizer - public endpoint
+      confirmSignupEvents:
+        - httpApi:
+            path: /confirm-signup
+            method: post
+            # No authorizer - public endpoint
+      signinEvents:
+        - httpApi:
+            path: /signin
+            method: post
+            # No authorizer - public endpoint
+      refreshEvents:
+        - httpApi:
+            path: /refresh
+            method: post
+            # No authorizer - public endpoint
       cors:
         allowedOrigins:
           - https://yourdomain.com
@@ -231,16 +318,20 @@ custom:
     dev:
       users: podpdf-dev-users
       userRateLimits: podpdf-dev-user-rate-limits
+      userRateLimitsV2: podpdf-dev-user-rate-limits-v2
       jobDetails: podpdf-dev-job-details
       analytics: podpdf-dev-analytics
       plans: podpdf-dev-plans
       bills: podpdf-dev-bills
+      apiKeys: podpdf-dev-api-keys
     prod:
       users: podpdf-prod-users
       userRateLimits: podpdf-prod-user-rate-limits
+      userRateLimitsV2: podpdf-prod-user-rate-limits-v2
       jobDetails: podpdf-prod-job-details
       analytics: podpdf-prod-analytics
       plans: podpdf-prod-plans
       bills: podpdf-prod-bills
+      apiKeys: podpdf-prod-api-keys
 
 resources: ${file(resources.yml)}

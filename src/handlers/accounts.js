@@ -90,9 +90,9 @@ async function createAccount(event) {
     }
 
     if (!email || typeof email !== 'string' || !email.trim()) {
-      return {
+  return {
         statusCode: 400,
-        headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           error: {
             code: 'MISSING_EMAIL',
@@ -139,7 +139,7 @@ async function createAccount(event) {
         account_status: userRecord.account_status,
         created_at: userRecord.created_at,
       }),
-    };
+  };
   } catch (error) {
     logger.error('Error creating account', { error: error.message, stack: error.stack });
     return InternalServerError.GENERIC(error.message);
@@ -153,9 +153,9 @@ async function getAccount(event) {
   try {
     const userSub = await extractUserSub(event);
     if (!userSub) {
-      return {
+  return {
         statusCode: 401,
-        headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           error: {
             code: 'UNAUTHORIZED',
@@ -181,12 +181,13 @@ async function getAccount(event) {
         plan_id: user.plan_id,
         account_status: user.account_status,
         total_pdf_count: user.total_pdf_count || 0,
+        free_credits_remaining: user.free_credits_remaining ?? null,
         quota_exceeded: user.quota_exceeded || false,
         webhook_url: user.webhook_url || null,
         created_at: user.created_at,
         upgraded_at: user.upgraded_at || null,
       }),
-    };
+  };
   } catch (error) {
     logger.error('Error getting account', { error: error.message });
     return InternalServerError.GENERIC(error.message);
@@ -242,9 +243,9 @@ async function updateWebhook(event) {
   try {
     const userSub = await extractUserSub(event);
     if (!userSub) {
-      return {
+  return {
         statusCode: 401,
-        headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           error: {
             code: 'UNAUTHORIZED',
@@ -516,16 +517,27 @@ async function upgradeToPaidPlan(event) {
     // Update user to paid plan
     const nowISO = new Date().toISOString();
     try {
+      // Build update expression
+      let updateExpression = 'SET plan_id = :plan_id, account_status = :status, quota_exceeded = :false, upgraded_at = :upgraded_at';
+      const expressionAttributeValues = {
+        ':plan_id': plan_id,
+        ':status': 'paid',
+        ':false': false,
+        ':upgraded_at': nowISO,
+      };
+      
+      // Initialize free_credits_remaining if plan has free credits
+      if (plan.free_credits && plan.free_credits > 0) {
+        updateExpression += ', free_credits_remaining = if_not_exists(free_credits_remaining, :zero) + :credits';
+        expressionAttributeValues[':zero'] = 0;
+        expressionAttributeValues[':credits'] = plan.free_credits;
+      }
+      
       await updateItem(
         USERS_TABLE,
         { user_id: user.user_id },
-        'SET plan_id = :plan_id, account_status = :status, quota_exceeded = :false, upgraded_at = :upgraded_at',
-        {
-          ':plan_id': plan_id,
-          ':status': 'paid',
-          ':false': false,
-          ':upgraded_at': nowISO,
-        }
+        updateExpression,
+        expressionAttributeValues
       );
     } catch (error) {
       logger.error('Error upgrading user to paid plan', {
@@ -537,6 +549,9 @@ async function upgradeToPaidPlan(event) {
       return InternalServerError.GENERIC('Failed to upgrade account');
     }
 
+    // Get updated user to return free_credits_remaining
+    const updatedUser = await getUserAccount(userSub);
+    
     return {
       statusCode: 200,
       headers: { 'Content-Type': 'application/json' },
@@ -547,7 +562,9 @@ async function upgradeToPaidPlan(event) {
           name: plan.name,
           type: plan.type,
           price_per_pdf: plan.price_per_pdf,
+          free_credits: plan.free_credits || 0,
         },
+        free_credits_remaining: updatedUser?.free_credits_remaining ?? (plan.free_credits || 0),
         upgraded_at: nowISO,
       }),
     };

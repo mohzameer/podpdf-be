@@ -1,6 +1,6 @@
 /**
- * Sign-in handler
- * POST /signin - Authenticate user with Cognito and return tokens
+ * Refresh token handler
+ * POST /refresh - Refresh authentication tokens using refresh token
  */
 
 const logger = require('../utils/logger');
@@ -14,7 +14,7 @@ const COGNITO_USER_POOL_CLIENT_ID = process.env.COGNITO_USER_POOL_CLIENT_ID;
 const cognitoClient = new CognitoIdentityProviderClient({});
 
 /**
- * Sign-in handler
+ * Refresh token handler
  * @param {object} event - API Gateway event
  * @returns {object} API Gateway response
  */
@@ -29,37 +29,36 @@ async function handler(event) {
       return BadRequest('Invalid JSON in request body');
     }
 
-    const { email, password } = body;
+    const { refreshToken } = body;
 
     // Validate input
-    if (!email || !password) {
-      return BadRequest('Missing required fields: email and password');
+    if (!refreshToken) {
+      return BadRequest('Missing required field: refreshToken');
     }
 
-    if (typeof email !== 'string' || typeof password !== 'string') {
-      return BadRequest('email and password must be strings');
+    if (typeof refreshToken !== 'string') {
+      return BadRequest('refreshToken must be a string');
     }
 
-    logger.info('Sign-in attempt', { email });
+    logger.info('Refresh token attempt');
 
-    // Initiate authentication with Cognito
+    // Initiate token refresh with Cognito
     try {
       const command = new InitiateAuthCommand({
-        AuthFlow: 'USER_PASSWORD_AUTH',
+        AuthFlow: 'REFRESH_TOKEN_AUTH',
         ClientId: COGNITO_USER_POOL_CLIENT_ID,
         AuthParameters: {
-          USERNAME: email,
-          PASSWORD: password,
+          REFRESH_TOKEN: refreshToken,
         },
       });
 
       const response = await cognitoClient.send(command);
 
-      // Check if authentication was successful
+      // Check if refresh was successful
       if (response.AuthenticationResult) {
-        const { IdToken, AccessToken, RefreshToken, ExpiresIn } = response.AuthenticationResult;
+        const { IdToken, AccessToken, ExpiresIn } = response.AuthenticationResult;
 
-        logger.info('Sign-in successful', { email });
+        logger.info('Token refresh successful');
 
         return {
           statusCode: 200,
@@ -67,33 +66,27 @@ async function handler(event) {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            message: 'Sign-in successful',
+            message: 'Token refresh successful',
             tokens: {
               idToken: IdToken,
               accessToken: AccessToken,
-              refreshToken: RefreshToken,
               expiresIn: ExpiresIn,
             },
           }),
         };
       } else {
-        logger.warn('Sign-in failed: No authentication result', { email });
-        return Unauthorized('Invalid email or password');
+        logger.warn('Token refresh failed: No authentication result');
+        return Unauthorized('Invalid refresh token');
       }
     } catch (error) {
-      logger.error('Cognito authentication error', {
+      logger.error('Cognito token refresh error', {
         error: error.message,
         code: error.name,
-        email,
       });
 
       // Handle specific Cognito errors
       if (error.name === 'NotAuthorizedException') {
-        return Unauthorized('Invalid email or password');
-      } else if (error.name === 'UserNotConfirmedException') {
-        return BadRequest('User account is not confirmed. Please verify your email address.');
-      } else if (error.name === 'UserNotFoundException') {
-        return Unauthorized('Invalid email or password');
+        return Unauthorized('Invalid or expired refresh token');
       } else if (error.name === 'TooManyRequestsException') {
         return {
           statusCode: 429,
@@ -102,16 +95,16 @@ async function handler(event) {
           },
           body: JSON.stringify({
             error: 'TooManyRequests',
-            message: 'Too many sign-in attempts. Please try again later.',
+            message: 'Too many refresh attempts. Please try again later.',
           }),
         };
       }
 
       // Generic error
-      return InternalServerError('Authentication failed. Please try again later.');
+      return InternalServerError('Token refresh failed. Please try again later.');
     }
   } catch (error) {
-    logger.error('Unexpected error in sign-in handler', {
+    logger.error('Unexpected error in refresh token handler', {
       error: error.message,
       stack: error.stack,
     });
