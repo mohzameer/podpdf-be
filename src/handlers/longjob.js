@@ -187,6 +187,7 @@ async function handler(event) {
       mode: inputType,
       status: 'queued',
       webhookUrl: finalWebhookUrl,
+      apiKeyId: userInfo.apiKeyId || null, // Track which API key was used (null if JWT)
     });
 
     // Prepare SQS message

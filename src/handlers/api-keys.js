@@ -12,6 +12,7 @@ const { extractUserSub } = require('../middleware/auth');
 const { getUserAccount } = require('../services/business');
 const { getItem, putItem, queryItems, updateItem } = require('../services/dynamodb');
 const { Forbidden, BadRequest, NotFound, InternalServerError } = require('../utils/errors');
+const { generateULID } = require('../utils/ulid');
 const crypto = require('crypto');
 
 const API_KEYS_TABLE = process.env.API_KEYS_TABLE;
@@ -101,7 +102,10 @@ async function createApiKey(event, userId) {
       return Forbidden.ACCOUNT_NOT_FOUND();
     }
 
-    // Generate API key
+    // Generate API key ID (ULID) for tracking/referencing
+    const apiKeyId = generateULID();
+
+    // Generate API key secret
     // Format: pk_live_<random> or pk_test_<random> based on stage
     const stage = process.env.STAGE || 'dev';
     const prefix = stage === 'prod' ? 'pk_live_' : 'pk_test_';
@@ -112,6 +116,7 @@ async function createApiKey(event, userId) {
     const now = new Date().toISOString();
     const apiKeyRecord = {
       api_key: apiKey,
+      api_key_id: apiKeyId,
       user_id: userId,
       user_sub: user.user_sub,
       name: name && typeof name === 'string' && name.trim() ? name.trim() : null,
@@ -125,6 +130,7 @@ async function createApiKey(event, userId) {
 
     logger.info('API key created', {
       userId,
+      apiKeyId,
       apiKeyPrefix: apiKey.substring(0, 10) + '...',
       name: apiKeyRecord.name,
     });
@@ -134,6 +140,7 @@ async function createApiKey(event, userId) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         api_key: apiKey, // Return full key only on creation
+        api_key_id: apiKeyId,
         name: apiKeyRecord.name,
         created_at: apiKeyRecord.created_at,
         message: 'API key created successfully. Store this key securely - it will not be shown again.',
@@ -163,6 +170,7 @@ async function listApiKeys(event, userId) {
 
     // Format response (don't expose full API key, only prefix)
     const formattedKeys = (apiKeys || []).map(key => ({
+      api_key_id: key.api_key_id,
       api_key_prefix: key.api_key.substring(0, 12) + '...', // Show first 12 chars
       name: key.name,
       is_active: key.is_active,
@@ -199,33 +207,39 @@ async function listApiKeys(event, userId) {
  */
 async function revokeApiKey(event, userId, apiKeyId) {
   try {
-    // apiKeyId is the full API key (from path parameter)
-    // Look up the API key
-    const apiKeyRecord = await getItem(API_KEYS_TABLE, {
-      api_key: apiKeyId,
-    });
+    // apiKeyId is the ULID (from path parameter)
+    // Look up the API key using the ApiKeyIdIndex GSI
+    const apiKeys = await queryItems(
+      API_KEYS_TABLE,
+      'api_key_id = :api_key_id',
+      { ':api_key_id': apiKeyId },
+      'ApiKeyIdIndex'
+    );
 
-    if (!apiKeyRecord) {
+    if (!apiKeys || apiKeys.length === 0) {
       return NotFound('API key not found');
     }
+
+    const apiKeyRecord = apiKeys[0];
 
     // Verify the API key belongs to the authenticated user
     if (apiKeyRecord.user_id !== userId) {
       return Forbidden('API key does not belong to authenticated user');
     }
 
-    // Revoke the API key
+    // Revoke the API key (use api_key as the primary key for update)
     const now = new Date().toISOString();
     await updateItem(
       API_KEYS_TABLE,
-      { api_key: apiKeyId },
+      { api_key: apiKeyRecord.api_key },
       'SET is_active = :false, revoked_at = :now',
       { ':false': false, ':now': now }
     );
 
     logger.info('API key revoked', {
       userId,
-      apiKeyPrefix: apiKeyId.substring(0, 10) + '...',
+      apiKeyId,
+      apiKeyPrefix: apiKeyRecord.api_key.substring(0, 10) + '...',
     });
 
     return {
@@ -233,7 +247,8 @@ async function revokeApiKey(event, userId, apiKeyId) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         message: 'API key revoked successfully',
-        api_key_prefix: apiKeyId.substring(0, 12) + '...',
+        api_key_id: apiKeyId,
+        api_key_prefix: apiKeyRecord.api_key.substring(0, 12) + '...',
         revoked_at: now,
       }),
     };
@@ -241,7 +256,7 @@ async function revokeApiKey(event, userId, apiKeyId) {
     logger.error('Error revoking API key', {
       error: error.message,
       userId,
-      apiKeyId: apiKeyId ? apiKeyId.substring(0, 10) + '...' : 'null',
+      apiKeyId,
     });
     return InternalServerError.GENERIC(error.message);
   }

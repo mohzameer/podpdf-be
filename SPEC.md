@@ -88,7 +88,10 @@ Client → API Gateway → Lambda (longjob) → SQS Queue
 - **CORS:** Enabled
 - **Throttling:** 
   - Global: 1000 requests/second with 2000 burst
-- **Authorization:** JWT authorizer integrated with Amazon Cognito
+- **Authorization:** 
+  - `/quickjob` and `/longjob`: No API Gateway authorizer (authentication handled in Lambda to support both JWT and API key)
+  - Other authenticated endpoints: JWT authorizer integrated with Amazon Cognito
+- **CloudWatch Logs:** Enabled for API Gateway access logging
 
 ### AWS Lambda
 
@@ -164,6 +167,7 @@ Client → API Gateway → Lambda (longjob) → SQS Queue
    - **Partition Key:** `job_id` (UUID, generated per PDF generation request)
    - **Attributes:**
      - `user_id` (String, ULID) - User identifier (reference to Users table)
+     - `api_key_id` (String, ULID, optional) - API key identifier (reference to ApiKeys table) - `null` if JWT was used for authentication
      - `status` (String) - Job status: `"queued"`, `"processing"`, `"completed"`, `"failed"`, or `"timeout"` (for quick jobs)
      - `job_type` (String, **required**) - `"quick"` or `"long"` - Distinguishes between synchronous quick jobs and asynchronous long jobs
      - `mode` (String) - Input mode: `"html"` or `"markdown"`
@@ -184,6 +188,7 @@ Client → API Gateway → Lambda (longjob) → SQS Queue
    - **TTL:** Not applicable (permanent storage for job history)
    - **Field Usage Notes:**
      - `job_type`: Set at job creation - `"quick"` for `/quickjob` endpoint, `"long"` for `/longjob` endpoint
+     - `api_key_id`: Set at job creation - ULID of the API key used, or `null` if JWT authentication was used
      - `webhook_url`: Set at job creation for long jobs only - uses user's default webhook URL or override from request
      - `status`: Initial value is `"queued"` for long jobs, `"processing"` for quick jobs (immediate processing)
      - Long job fields (`s3_key`, `s3_url`, `webhook_url`, etc.) are only populated for `job_type: "long"`
@@ -218,8 +223,12 @@ Client → API Gateway → Lambda (longjob) → SQS Queue
 
 6. **ApiKeys**
    - **Partition Key:** `api_key` (String) - The API key itself (e.g., `"pk_live_abc123..."` or `"pk_test_xyz789..."`)
+   - **Global Secondary Indexes:**
+     - `UserIdIndex` on `user_id` (for listing all API keys for a user)
+     - `ApiKeyIdIndex` on `api_key_id` (for lookup by API key ID, used in revoke endpoint and job tracking)
    - **Attributes:**
      - `api_key` (String) - The API key (partition key, also stored as attribute for consistency)
+     - `api_key_id` (String, ULID) - Unique identifier for the API key, used for references (e.g., in job records)
      - `user_id` (String, ULID) - User identifier (reference to Users table, used for rate limiting and quota checks)
      - `user_sub` (String) - Cognito user identifier (stored for reference, but not used for rate limiting)
      - `name` (String, optional) - User-provided name/description for the API key (e.g., `"Production API Key"`, `"Development Key"`)
@@ -228,7 +237,7 @@ Client → API Gateway → Lambda (longjob) → SQS Queue
      - `last_used_at` (String, ISO 8601 timestamp, optional) - Last time the API key was used
      - `revoked_at` (String, ISO 8601 timestamp, optional) - When the API key was revoked (if revoked)
    - **TTL:** Not applicable (API keys are long-lived until revoked)
-   - **Note:** API keys are stored in plaintext as the partition key for fast lookups. The key format should be prefixed (e.g., `pk_live_` or `pk_test_`) for identification. `user_id` is used for rate limiting and quota checks for consistency across all tables.
+   - **Note:** API keys are stored in plaintext as the partition key for fast lookups. The key format should be prefixed (e.g., `pk_live_` or `pk_test_`) for identification. `user_id` is used for rate limiting and quota checks for consistency across all tables. `api_key_id` is a ULID used to reference API keys in job records for auditing which API key was used for each job.
 
 7. **Bills**
    - **Partition Key:** `user_id` (String, ULID) - User identifier
@@ -318,23 +327,25 @@ Client → API Gateway → Lambda (longjob) → SQS Queue
      - `options` (object, optional): Rendering options
 
 3. **API Gateway Processing**
-   - **JWT Token Path:** Validates the JWT using the Cognito authorizer (if JWT is provided)
-   - **API Key Path:** Passes through to Lambda for API key validation (if API key is provided)
+   - No authorizer configured for `/quickjob` (authentication handled in Lambda)
    - Applies global throttling
-   - Routes valid request to Lambda function
+   - Routes request to Lambda function
 
 4. **Lambda Handler Execution (quickjob)**
    
    **Authentication Phase:**
    - **JWT Token Path:**
-     - Extracts user ID (`sub`) directly from JWT claims (already validated by API Gateway)
-     - No additional DynamoDB lookup needed for authentication
+     - Extracts JWT from `Authorization: Bearer <token>` header
+     - Verifies JWT signature against Cognito JWKS (public keys)
+     - Validates issuer, audience, expiration, and `token_use: id`
+     - Extracts user ID (`sub`) from verified token claims
    - **API Key Path:**
-     - Extracts API key from `X-API-Key` header or `Authorization: Bearer` header
+     - Extracts API key from `X-API-Key` header or `Authorization: Bearer pk_...` header
      - Looks up API key in `ApiKeys` table (one DynamoDB lookup)
      - If found and `is_active: true`, retrieves `user_id` (and `user_sub` for user account lookup)
      - Updates `last_used_at` timestamp
      - If not found or inactive, rejects with 401 error
+   - **Note:** API key takes precedence if both are provided
    
    **Validation Phase:**
    - Validates user account exists: Retrieves user record from DynamoDB `Users` table using `user_id`
@@ -392,22 +403,25 @@ Client → API Gateway → Lambda (longjob) → SQS Queue
      - `webhook_url` (string, optional): Override user's default webhook URL for this job
 
 3. **API Gateway Processing**
-   - Validates the JWT using the Cognito authorizer
+   - No authorizer configured for `/longjob` (authentication handled in Lambda)
    - Applies global throttling
-   - Routes valid request to Lambda function
+   - Routes request to Lambda function
 
 4. **Lambda Handler Execution (longjob)**
    
    **Authentication Phase:**
    - **JWT Token Path:**
-     - Extracts user ID (`sub`) directly from JWT claims (already validated by API Gateway)
-     - No additional DynamoDB lookup needed for authentication
+     - Extracts JWT from `Authorization: Bearer <token>` header
+     - Verifies JWT signature against Cognito JWKS (public keys)
+     - Validates issuer, audience, expiration, and `token_use: id`
+     - Extracts user ID (`sub`) from verified token claims
    - **API Key Path:**
-     - Extracts API key from `X-API-Key` header or `Authorization: Bearer` header
+     - Extracts API key from `X-API-Key` header or `Authorization: Bearer pk_...` header
      - Looks up API key in `ApiKeys` table (one DynamoDB lookup)
      - If found and `is_active: true`, retrieves `user_id` (and `user_sub` for user account lookup)
      - Updates `last_used_at` timestamp
      - If not found or inactive, rejects with 401 error
+   - **Note:** API key takes precedence if both are provided
    
    **Validation Phase:**
    - Validates user account exists: Retrieves user record from DynamoDB `Users` table using `user_id`
@@ -702,9 +716,11 @@ The `/quickjob` and `/longjob` endpoints support two authentication methods:
 
 1. **JWT Token (Bearer Token)**
    - **Header:** `Authorization: Bearer <jwt_token>`
-   - Token is validated by API Gateway JWT authorizer
-   - User ID (`sub`) is extracted directly from JWT claims
-   - No additional DynamoDB lookup needed for authentication
+   - Token must be the **ID token** (not access token) from Cognito sign-in
+   - Token is verified directly in Lambda against Cognito JWKS (public keys)
+   - Validates issuer, audience, expiration, algorithm (RS256), and `token_use: id`
+   - User ID (`sub`) is extracted from verified token claims
+   - No API Gateway authorizer is used (authentication handled in Lambda to support dual auth)
 
 2. **API Key**
    - **Header:** `X-API-Key: <api_key>` or `Authorization: Bearer <api_key>`
@@ -723,14 +739,18 @@ All requests are validated in the following order:
 
 1. **Authentication Validation:**
    - **JWT Token Path:**
-     - JWT token must be present and valid (401 if missing or invalid)
-     - User ID (`sub`) is extracted directly from JWT claims (no DynamoDB lookup)
+     - JWT token must be present in `Authorization: Bearer <token>` header
+     - Token is verified against Cognito JWKS (public keys) in Lambda
+     - Validates issuer, audience, expiration, algorithm (RS256), and `token_use: id`
+     - Returns 401 if token is missing, invalid, expired, or not an ID token
+     - User ID (`sub`) is extracted from verified token claims
    - **API Key Path:**
-     - API key must be present in `X-API-Key` header or `Authorization: Bearer` header
+     - API key must be present in `X-API-Key` header or `Authorization: Bearer pk_...` header
      - API key is looked up in `ApiKeys` table (one DynamoDB lookup)
      - If found and `is_active: true`, retrieves `user_id` and `user_sub`
      - If not found or `is_active: false`, returns 401 Unauthorized
      - Updates `last_used_at` timestamp on successful lookup
+   - **Priority:** API key takes precedence if both are provided
 
 2. **Account Validation:**
    - User account must exist in DynamoDB `Users` table
@@ -780,10 +800,14 @@ The `ApiKeys` table stores API keys for programmatic access to `/quickjob` and `
 **Key Design:**
 - **Partition Key:** `api_key` (the API key itself, stored in plaintext for fast lookups)
 - **No Sort Key:** Simple key-value lookup structure
+- **Global Secondary Indexes:**
+  - `UserIdIndex` on `user_id` (for listing all API keys for a user)
+  - `ApiKeyIdIndex` on `api_key_id` (for lookup by API key ID)
 - **Format:** API keys should be prefixed (e.g., `pk_live_...` or `pk_test_...`) for identification
 
 **Attributes:**
 - `api_key` (String) - The API key (partition key)
+- `api_key_id` (String, ULID) - Unique identifier for the API key, used for references in job records
 - `user_id` (String, ULID) - User identifier (reference to Users table)
 - `user_sub` (String) - Cognito user identifier (for rate limiting - same `user_sub` used in UserRateLimitsTable)
 - `name` (String, optional) - User-provided name/description (e.g., `"Production API Key"`, `"Development Key"`)
@@ -872,8 +896,15 @@ The following endpoints will be needed for API key management (to be implemented
 - **No unauthenticated access** allowed
 
 **Authentication Performance:**
-- **JWT Token:** API Gateway validates token, `user_sub` extracted directly (no DynamoDB lookup)
+- **JWT Token:** Lambda verifies token against Cognito JWKS (cached for 10 minutes), `user_sub` extracted from claims
 - **API Key:** One DynamoDB lookup to `ApiKeys` table to retrieve `user_id` and `user_sub`
+
+**JWT Verification Details:**
+- JWKS (JSON Web Key Set) is fetched from Cognito and cached for 10 minutes
+- Token signature is verified using RS256 algorithm
+- Issuer must match `https://cognito-idp.{region}.amazonaws.com/{user_pool_id}`
+- Audience must match the Cognito User Pool Client ID
+- `token_use` claim must be `id` (not `access`)
 
 ### Throttling Layers
 
@@ -887,7 +918,7 @@ The following endpoints will be needed for API key management (to be implemented
    - **Paid Tier:** Unlimited (only limited by API Gateway global throttling)
    - **Rate Limit Table:** `UserRateLimitsTable` with partition key `user_id`
    - **Performance:**
-     - **JWT Token:** User account lookup via GSI on `user_sub` (1 DynamoDB lookup) → Rate limit check using `user_id` (1 DynamoDB lookup) = 2 total lookups
+     - **JWT Token:** JWT verification (cached JWKS) → User account lookup via GSI on `user_sub` (1 DynamoDB lookup) → Rate limit check using `user_id` (1 DynamoDB lookup) = 2 DynamoDB lookups + JWT verification
      - **API Key:** API key lookup (1 DynamoDB lookup) → User account lookup using `user_id` (1 DynamoDB lookup) → Rate limit check using `user_id` (1 DynamoDB lookup) = 3 total lookups
    - **Note:** Rate limiting uses `user_id` as partition key for consistency across all tables. We already have `user_id` after the user account lookup (required for quota checks, billing, etc.), so using `user_id` doesn't add any extra lookups and maintains consistency.
 

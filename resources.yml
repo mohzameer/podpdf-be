@@ -127,6 +127,8 @@ Resources:
           AttributeType: S
         - AttributeName: user_id
           AttributeType: S
+        - AttributeName: api_key_id
+          AttributeType: S
       KeySchema:
         - AttributeName: api_key
           KeyType: HASH
@@ -134,6 +136,12 @@ Resources:
         - IndexName: UserIdIndex
           KeySchema:
             - AttributeName: user_id
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+        - IndexName: ApiKeyIdIndex
+          KeySchema:
+            - AttributeName: api_key_id
               KeyType: HASH
           Projection:
             ProjectionType: ALL

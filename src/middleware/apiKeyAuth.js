@@ -39,7 +39,7 @@ function extractApiKey(event) {
 /**
  * Validate API key and return user information
  * @param {string} apiKey - API key to validate
- * @returns {Promise<{userId: string, userSub: string}|null>} User info or null if invalid
+ * @returns {Promise<{userId: string, userSub: string, apiKeyId: string}|null>} User info or null if invalid
  */
 async function validateApiKey(apiKey) {
   try {
@@ -82,11 +82,13 @@ async function validateApiKey(apiKey) {
     logger.debug('API key validated', {
       userId: apiKeyRecord.user_id,
       userSub: apiKeyRecord.user_sub,
+      apiKeyId: apiKeyRecord.api_key_id,
     });
     
     return {
       userId: apiKeyRecord.user_id,
       userSub: apiKeyRecord.user_sub,
+      apiKeyId: apiKeyRecord.api_key_id,
     };
   } catch (error) {
     logger.error('Error validating API key', {
@@ -100,7 +102,7 @@ async function validateApiKey(apiKey) {
 /**
  * Extract user information from either JWT token or API key
  * @param {object} event - Lambda event
- * @returns {Promise<{userId: string|null, userSub: string|null, authMethod: 'jwt'|'api_key'|null}>}
+ * @returns {Promise<{userId: string|null, userSub: string|null, apiKeyId: string|null, authMethod: 'jwt'|'api_key'|null}>}
  */
 async function extractUserInfo(event) {
   // Try API key first (if both are present, API key takes precedence)
@@ -108,9 +110,15 @@ async function extractUserInfo(event) {
   if (apiKey) {
     const apiKeyInfo = await validateApiKey(apiKey);
     if (apiKeyInfo) {
+      logger.debug('API key validated', {
+        userId: apiKeyInfo.userId,
+        userSub: apiKeyInfo.userSub,
+        apiKeyId: apiKeyInfo.apiKeyId,
+      });
       return {
         userId: apiKeyInfo.userId,
         userSub: apiKeyInfo.userSub,
+        apiKeyId: apiKeyInfo.apiKeyId,
         authMethod: 'api_key',
       };
     }
@@ -123,6 +131,7 @@ async function extractUserInfo(event) {
     return {
       userId: null, // Will be retrieved from user account lookup
       userSub: userSub,
+      apiKeyId: null, // No API key used
       authMethod: 'jwt',
     };
   }
@@ -130,6 +139,7 @@ async function extractUserInfo(event) {
   return {
     userId: null,
     userSub: null,
+    apiKeyId: null,
     authMethod: null,
   };
 }

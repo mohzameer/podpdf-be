@@ -16,11 +16,12 @@ Synchronous PDF generation for small documents that complete in under 30 seconds
 ### 1.1 Authentication
 
 - **Type:** JWT Bearer Token (Amazon Cognito) **OR** API Key
+- **Note:** No API Gateway authorizer is used. Authentication is handled directly in Lambda to support both JWT and API key.
 - **Headers (choose one):**
 
-**Option 1: JWT Token**
+**Option 1: JWT Token (ID Token)**
 ```http
-Authorization: Bearer <jwt_token>
+Authorization: Bearer <id_token>
 ```
 
 **Option 2: API Key**
@@ -34,8 +35,13 @@ Authorization: Bearer <api_key>
 
 **Requirements:**
 - Either a valid JWT token or a valid API key must be provided.
-- JWT token must be valid and not expired (if using JWT).
-- API key must be active and not revoked (if using API key).
+- **JWT Token Requirements:**
+  - Must be the **ID token** (not access token) from Cognito `/signin` response
+  - Token is verified directly in Lambda against Cognito JWKS (public keys)
+  - Validates issuer, audience, expiration, algorithm (RS256), and `token_use: id`
+- **API Key Requirements:**
+  - API key must be active and not revoked
+  - API keys start with `pk_live_` or `pk_test_`
 - User account must exist in `Users` (no anonymous or first-call auto-account creation).
 - **Note:** If both are provided, API key takes precedence.
 
@@ -180,7 +186,9 @@ Common error statuses:
   - PDF page count exceeds maximum allowed pages (`PAGE_LIMIT_EXCEEDED`)
 
 - `401 Unauthorized`
-  - Missing or invalid JWT
+  - Missing or invalid authentication (neither valid JWT nor API key provided)
+  - JWT token is expired, malformed, or not an ID token
+  - API key is invalid, revoked, or inactive
 
 - `403 Forbidden`
   - Account not found (`ACCOUNT_NOT_FOUND`)
@@ -208,11 +216,12 @@ Asynchronous PDF generation with queueing, S3 storage, and webhook notifications
 ### 2.1 Authentication
 
 - **Type:** JWT Bearer Token (Amazon Cognito) **OR** API Key
+- **Note:** No API Gateway authorizer is used. Authentication is handled directly in Lambda to support both JWT and API key.
 - **Headers (choose one):**
 
-**Option 1: JWT Token**
+**Option 1: JWT Token (ID Token)**
 ```http
-Authorization: Bearer <jwt_token>
+Authorization: Bearer <id_token>
 ```
 
 **Option 2: API Key**
@@ -226,8 +235,13 @@ Authorization: Bearer <api_key>
 
 **Requirements:**
 - Either a valid JWT token or a valid API key must be provided.
-- JWT token must be valid and not expired (if using JWT).
-- API key must be active and not revoked (if using API key).
+- **JWT Token Requirements:**
+  - Must be the **ID token** (not access token) from Cognito `/signin` response
+  - Token is verified directly in Lambda against Cognito JWKS (public keys)
+  - Validates issuer, audience, expiration, algorithm (RS256), and `token_use: id`
+- **API Key Requirements:**
+  - API key must be active and not revoked
+  - API keys start with `pk_live_` or `pk_test_`
 - User account must exist in `Users`.
 - **Note:** If both are provided, API key takes precedence.
 
@@ -380,6 +394,7 @@ Authorization: Bearer <jwt_token>
   "created_at": "2025-12-21T10:30:00Z",
   "completed_at": "2025-12-21T10:30:05Z",
   "timeout_occurred": false,
+  "api_key_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
   "error_message": null
 }
 ```
@@ -449,6 +464,7 @@ Authorization: Bearer <jwt_token>
 - `webhook_delivered_at` (string, optional): ISO 8601 timestamp when webhook was delivered.
 - `webhook_retry_count` (number, optional): Number of webhook retry attempts (0-3).
 - `timeout_occurred` (boolean, optional): `true` if quick job exceeded 30-second timeout.
+- `api_key_id` (string, ULID, optional): The API key ID used for this job. `null` if JWT authentication was used.
 - `error_message` (string, optional): Error message if status is `"failed"` or `"timeout"`.
 
 #### 3.3.2 Error Responses
@@ -1598,6 +1614,7 @@ Authorization: Bearer <jwt_token>
 ```json
 {
   "api_key": "pk_live_abc123xyz...",
+  "api_key_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
   "name": "Production API Key",
   "created_at": "2025-12-21T10:00:00Z",
   "message": "API key created successfully. Store this key securely - it will not be shown again."
@@ -1606,6 +1623,7 @@ Authorization: Bearer <jwt_token>
 
 **Fields:**
 - `api_key` (string): The full API key. **This is the only time the full key is returned.** Store it securely.
+- `api_key_id` (string, ULID): Unique identifier for the API key. Use this for revoking the key and for tracking in job records.
 - `name` (string, optional): The name assigned to the API key.
 - `created_at` (string): ISO 8601 timestamp when the key was created.
 - `message` (string): Reminder message about storing the key securely.
@@ -1653,6 +1671,7 @@ Authorization: Bearer <jwt_token>
 {
   "api_keys": [
     {
+      "api_key_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
       "api_key_prefix": "pk_live_abc1...",
       "name": "Production API Key",
       "is_active": true,
@@ -1661,6 +1680,7 @@ Authorization: Bearer <jwt_token>
       "revoked_at": null
     },
     {
+      "api_key_id": "01ARZ3NDEKTSV4RRFFQ69G5FAW",
       "api_key_prefix": "pk_test_xyz9...",
       "name": "Development API Key",
       "is_active": false,
@@ -1675,6 +1695,7 @@ Authorization: Bearer <jwt_token>
 
 **Fields:**
 - `api_keys` (array): List of API keys, sorted by `created_at` descending (newest first).
+  - `api_key_id` (string, ULID): Unique identifier for the API key. Use this for revoking and tracking.
   - `api_key_prefix` (string): First 12 characters of the API key followed by `...` (for identification only).
   - `name` (string, optional): Descriptive name for the API key.
   - `is_active` (boolean): Whether the API key is active (`false` if revoked).
@@ -1715,7 +1736,7 @@ Authorization: Bearer <jwt_token>
 **Path:** `/accounts/me/api-keys/{api_key_id}`
 
 **Path Parameters:**
-- `api_key_id` (string, required): The full API key to revoke (e.g., `pk_live_abc123xyz...`).
+- `api_key_id` (string, required): The ULID of the API key to revoke (e.g., `01ARZ3NDEKTSV4RRFFQ69G5FAV`). This is returned when creating the API key and in the list response.
 
 #### 14.3.3 Response
 
@@ -1723,6 +1744,7 @@ Authorization: Bearer <jwt_token>
 ```json
 {
   "message": "API key revoked successfully",
+  "api_key_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
   "api_key_prefix": "pk_live_abc1...",
   "revoked_at": "2025-12-21T10:00:00Z"
 }
@@ -1730,6 +1752,7 @@ Authorization: Bearer <jwt_token>
 
 **Fields:**
 - `message` (string): Confirmation message.
+- `api_key_id` (string, ULID): The ID of the revoked API key.
 - `api_key_prefix` (string): First 12 characters of the revoked API key followed by `...`.
 - `revoked_at` (string): ISO 8601 timestamp when the key was revoked.
 

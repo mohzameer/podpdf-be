@@ -33,9 +33,28 @@ async function handler(event) {
   let userSub = null;
 
   try {
+    // Log request headers for debugging (sanitize sensitive data)
+    const headers = event.headers || {};
+    logger.info('QuickJob request received', {
+      hasXApiKey: !!(headers['x-api-key'] || headers['X-API-Key']),
+      hasAuthorization: !!headers.authorization || !!headers.Authorization,
+      authHeaderPrefix: headers.authorization ? headers.authorization.substring(0, 20) + '...' : headers.Authorization ? headers.Authorization.substring(0, 20) + '...' : null,
+      apiKeysTable: process.env.API_KEYS_TABLE,
+    });
+
     // Extract user info from either JWT token or API key
     const userInfo = await extractUserInfo(event);
+    logger.info('User info extracted', {
+      hasUserId: !!userInfo.userId,
+      hasUserSub: !!userInfo.userSub,
+      hasApiKeyId: !!userInfo.apiKeyId,
+      authMethod: userInfo.authMethod || 'none',
+    });
+
     if (!userInfo.userId && !userInfo.userSub) {
+      logger.warn('Authentication failed - no user info', {
+        authMethod: userInfo.authMethod,
+      });
       return {
         statusCode: 401,
         headers: { 'Content-Type': 'application/json' },
@@ -149,6 +168,7 @@ async function handler(event) {
       jobType: 'quick',
       mode: inputType,
       status: 'processing',
+      apiKeyId: userInfo.apiKeyId || null, // Track which API key was used (null if JWT)
     });
 
     // Set up timeout

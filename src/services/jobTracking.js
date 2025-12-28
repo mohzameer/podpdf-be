@@ -32,6 +32,7 @@ async function createJobRecord(jobData) {
       mode, // 'html' or 'markdown'
       status, // 'queued', 'processing', 'completed', 'failed', 'timeout'
       webhookUrl, // Optional, for long jobs
+      apiKeyId, // Optional, ULID of the API key used for this job (null if JWT was used)
     } = jobData;
 
     const now = new Date().toISOString();
@@ -44,6 +45,7 @@ async function createJobRecord(jobData) {
       status,
       created_at: now,
       ...(webhookUrl && { webhook_url: webhookUrl }),
+      ...(apiKeyId && { api_key_id: apiKeyId }),
     };
 
     await putItem(JOB_DETAILS_TABLE, jobRecord);
@@ -53,6 +55,7 @@ async function createJobRecord(jobData) {
       jobType,
       status,
       userId,
+      apiKeyId: apiKeyId || null,
     });
 
     return jobRecord;

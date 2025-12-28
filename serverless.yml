@@ -29,6 +29,7 @@ provider:
     PDFS_BUCKET: podpdf-${self:provider.stage}-pdfs
     LONGJOB_QUEUE_URL: !Ref LongJobQueue
     COGNITO_USER_POOL_CLIENT_ID: !Ref CognitoUserPoolClient
+    COGNITO_USER_POOL_ID: !Ref CognitoUserPool
   
   httpApi:
     cors:
@@ -36,6 +37,7 @@ provider:
       allowedHeaders:
         - Content-Type
         - Authorization
+        - X-API-Key
         - X-PDF-Pages
         - X-PDF-Truncated
         - X-Job-Id
@@ -60,6 +62,9 @@ provider:
               - '.amazonaws.com/'
               - !Ref CognitoUserPool
         audience: !Ref CognitoUserPoolClient
+  
+  logs:
+    httpApi: true
   
   iam:
     role:
@@ -118,7 +123,7 @@ functions:
       - httpApi:
           path: /quickjob
           method: post
-          # No authorizer - supports both JWT and API key authentication
+          authorizer: null  # Explicitly no authorizer - supports both JWT and API key authentication
   
   longjob:
     handler: src/handlers/longjob.handler
@@ -129,7 +134,7 @@ functions:
       - httpApi:
           path: /longjob
           method: post
-          # No authorizer - supports both JWT and API key authentication
+          authorizer: null  # Explicitly no authorizer - supports both JWT and API key authentication
   
   longjob-processor:
     handler: src/handlers/longjob-processor.handler
