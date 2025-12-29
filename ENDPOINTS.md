@@ -851,9 +851,9 @@ Get plan details. Use `GET /plans` to list all active plans, or `GET /plans/{pla
       "name": "Paid Standard",
       "type": "paid",
       "monthly_quota": null,
-      "price_per_pdf": 0.005,
+      "price_per_pdf": 0.01,
       "rate_limit_per_minute": null,
-      "description": "Paid plan with unlimited PDFs. Price: $0.005 per PDF. Unlimited rate limit.",
+      "description": "Paid plan with unlimited PDFs. Price: $0.01 per PDF. Unlimited rate limit.",
       "is_active": true
     }
   ],
@@ -950,9 +950,9 @@ curl -X GET https://api.podpdf.com/plans/free-basic
       "name": "Paid Standard",
       "type": "paid",
       "monthly_quota": null,
-      "price_per_pdf": 0.005,
+      "price_per_pdf": 0.01,
       "rate_limit_per_minute": null,
-      "description": "Paid plan with unlimited PDFs. Price: $0.005 per PDF. Unlimited rate limit.",
+      "description": "Paid plan with unlimited PDFs. Price: $0.01 per PDF. Unlimited rate limit.",
       "is_active": true
     }
   ],
@@ -968,9 +968,9 @@ curl -X GET https://api.podpdf.com/plans/free-basic
     "name": "Paid Standard",
     "type": "paid",
     "monthly_quota": null,
-    "price_per_pdf": 0.005,
+    "price_per_pdf": 0.01,
     "rate_limit_per_minute": null,
-    "description": "Paid plan with unlimited PDFs. Price: $0.005 per PDF. Unlimited rate limit.",
+    "description": "Paid plan with unlimited PDFs. Price: $0.01 per PDF. Unlimited rate limit.",
     "is_active": true
   }
 }
@@ -1115,7 +1115,7 @@ Authorization: Bearer <jwt_token>
     "billing_month": "2025-12",
     "monthly_billing_amount": 0.125,
     "pdf_count": 25,
-    "price_per_pdf": 0.005,
+    "price_per_pdf": 0.01,
     "is_paid": false
   }
 }
@@ -1171,7 +1171,7 @@ curl -X GET https://api.podpdf.com/accounts/me/billing \
     "billing_month": "2025-12",
     "monthly_billing_amount": 0.125,
     "pdf_count": 25,
-    "price_per_pdf": 0.005,
+    "price_per_pdf": 0.01,
     "is_paid": false
   }
 }
@@ -1407,7 +1407,7 @@ Authorization: Bearer <jwt_token>
     "plan_id": "paid-standard",
     "name": "Paid Standard",
     "type": "paid",
-    "price_per_pdf": 0.005
+    "price_per_pdf": 0.01
   },
   "upgraded_at": "2025-12-24T15:30:00Z"
 }
@@ -1510,7 +1510,7 @@ curl -X PUT https://api.podpdf.com/accounts/me/upgrade \
     "plan_id": "paid-standard",
     "name": "Paid Standard",
     "type": "paid",
-    "price_per_pdf": 0.005
+    "price_per_pdf": 0.01
   },
   "upgraded_at": "2025-12-24T15:30:00Z"
 }

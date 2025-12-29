@@ -14,11 +14,11 @@
 ### 2. Pricing Model Ambiguity ✅ RESOLVED
 **Location:** Lines 356, 364, 371
 **Issue:** Unclear if free tier users can:
-- Continue using service after 100 PDFs by paying $0.005 per PDF, OR
-- Must upgrade to a paid plan first, then pay $0.005 per PDF
+- Continue using service after 100 PDFs by paying $0.01 per PDF, OR
+- Must upgrade to a paid plan first, then pay $0.01 per PDF
 **Fix Applied:**
 - Clarified that free tier users must upgrade to paid plan after 100 PDFs (no pay-per-PDF option for free tier)
-- Paid plan users have unlimited PDFs, billed at $0.005 per PDF
+- Paid plan users have unlimited PDFs, billed at $0.01 per PDF
 - Usage is tracked and invoiced monthly for paid plan users
 - Updated error messages to indicate upgrade is required
 
@@ -26,10 +26,10 @@
 **Location:** Line 364, 329
 **Issue:** Spec says paid tier has "unlimited rate" but doesn't clarify:
 - Do paid tier users have unlimited PDFs? 
-- Or do they pay $0.005 per PDF with no quota limit?
+- Or do they pay $0.01 per PDF with no quota limit?
 **Fix Applied:**
 - Clarified that paid plan users have unlimited PDFs (no quota limit)
-- They pay $0.005 per PDF, invoiced monthly
+- They pay $0.01 per PDF, invoiced monthly
 - Rate limits are unlimited for paid plan users (only limited by API Gateway)
 
 ### 5. Request Validation Missing ✅ RESOLVED

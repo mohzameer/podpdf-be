@@ -188,7 +188,7 @@ describe('incrementPdfCount', () => {
       const paidPlan = {
         plan_id: 'paid-standard',
         type: 'paid',
-        price_per_pdf: 0.005,
+        price_per_pdf: 0.01,
       };
       
       const currentMonth = new Date().toISOString().slice(0, 7); // YYYY-MM
@@ -226,7 +226,7 @@ describe('incrementPdfCount', () => {
       // Should include billing fields
       expect(updateExpression).toContain('monthly_billing_amount');
       expect(updateExpression).toContain('monthly_pdf_count');
-      expect(expressionValues[':billing']).toBe(0.005);
+      expect(expressionValues[':billing']).toBe(0.01);
       expect(expressionValues[':inc']).toBe(1);
     });
 
@@ -236,7 +236,7 @@ describe('incrementPdfCount', () => {
       const paidPlan = {
         plan_id: 'paid-standard',
         type: 'paid',
-        price_per_pdf: 0.005,
+        price_per_pdf: 0.01,
       };
       
       const currentMonth = new Date().toISOString().slice(0, 7);
@@ -279,7 +279,7 @@ describe('incrementPdfCount', () => {
       const paidPlan = {
         plan_id: 'paid-standard',
         type: 'paid',
-        price_per_pdf: 0.005,
+        price_per_pdf: 0.01,
       };
       
       const user = {
@@ -306,7 +306,7 @@ describe('incrementPdfCount', () => {
       // Should create new bill for new month
       expect(billItem.billing_month).toBe(currentMonth);
       expect(billItem.monthly_pdf_count).toBe(1);
-      expect(billItem.monthly_billing_amount).toBe(0.005);
+      expect(billItem.monthly_billing_amount).toBe(0.01);
     });
 
     it('should set billing_month to current month on reset', async () => {
@@ -315,7 +315,7 @@ describe('incrementPdfCount', () => {
       const paidPlan = {
         plan_id: 'paid-standard',
         type: 'paid',
-        price_per_pdf: 0.005,
+        price_per_pdf: 0.01,
       };
       
       const user = {
@@ -346,7 +346,7 @@ describe('incrementPdfCount', () => {
       const paidPlan = {
         plan_id: 'paid-standard',
         type: 'paid',
-        price_per_pdf: 0.005,
+        price_per_pdf: 0.01,
       };
       
       const user = {
@@ -368,7 +368,7 @@ describe('incrementPdfCount', () => {
       const putCall = mockPutItem.mock.calls[0];
       const billItem = putCall[1];
       expect(billItem.monthly_pdf_count).toBe(1);
-      expect(billItem.monthly_billing_amount).toBe(0.005);
+      expect(billItem.monthly_billing_amount).toBe(0.01);
     });
 
     it('should handle null plan gracefully', async () => {
@@ -475,7 +475,7 @@ describe('incrementPdfCount', () => {
       const paidPlan = {
         plan_id: 'paid-standard',
         type: 'paid',
-        price_per_pdf: 0.005,
+        price_per_pdf: 0.01,
       };
       
       const currentMonth = new Date().toISOString().slice(0, 7);
@@ -501,7 +501,7 @@ describe('incrementPdfCount', () => {
       const billsUpdateCall = mockUpdateItem.mock.calls[1];
       const expressionValues = billsUpdateCall[3];
       
-      expect(expressionValues[':billing']).toBe(0.005);
+      expect(expressionValues[':billing']).toBe(0.01);
     });
 
     it('should handle different price_per_pdf values', async () => {

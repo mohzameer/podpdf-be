@@ -215,7 +215,7 @@ Client → API Gateway → Lambda (longjob) → SQS Queue
      - `type` (String) - `"free"` or `"paid"`
      - `monthly_quota` (Number, optional) - Number of PDFs included per month (e.g., `100` for free, `null` for unlimited paid)
      - `free_credits` (Number, optional) - Number of free PDF credits included with the plan (e.g., `100`). These credits are used before `price_per_pdf` billing starts. Defaults to `0` if not set.
-     - `price_per_pdf` (Number) - Price per PDF (e.g., `0` for free, `0.005` for paid)
+     - `price_per_pdf` (Number) - Price per PDF (e.g., `0` for free, `0.01` for paid)
      - `rate_limit_per_minute` (Number, optional) - Per-user rate limit (e.g., `20` for free, `null` or higher value for paid)
      - `description` (String, optional) - Description of the plan
      - `is_active` (Boolean) - Indicates if plan is active and available for assignment
@@ -671,9 +671,9 @@ Client → API Gateway → Lambda (longjob) → SQS Queue
       "name": "Paid Standard",
       "type": "paid",
       "monthly_quota": null,
-      "price_per_pdf": 0.005,
+      "price_per_pdf": 0.01,
       "rate_limit_per_minute": null,
-      "description": "Paid plan with unlimited PDFs. Price: $0.005 per PDF. Unlimited rate limit.",
+      "description": "Paid plan with unlimited PDFs. Price: $0.01 per PDF. Unlimited rate limit.",
       "is_active": true
     }
   ],
@@ -1001,7 +1001,7 @@ The following endpoints will be needed for API key management (to be implemented
 - **Upgrade Required:** Users must upgrade to paid plan after reaching 100 PDFs
 - **PDF Limit:** Unlimited PDFs (no quota limit)
 - **Free Credits:** Plans may include `free_credits` (e.g., 100 free PDFs). Free credits are consumed first before `price_per_pdf` billing starts.
-- **Price:** $0.005 per PDF (charged only after free credits are exhausted)
+- **Price:** $0.01 per PDF (charged only after free credits are exhausted)
 - **Billing:** Usage tracked per PDF and invoiced monthly. Free credits are used first, then billing applies.
 - **Tracking:** 
   - All-time PDF count maintained in `Users` table
@@ -1080,7 +1080,7 @@ The following endpoints will be needed for API key management (to be implemented
 ### Pricing Strategy
 
 - **Free Tier:** 100 PDFs (all-time, generous onboarding, then must upgrade)
-- **Paid Plan:** $0.005 per PDF, unlimited PDFs, monthly invoicing
+- **Paid Plan:** $0.01 per PDF, unlimited PDFs, monthly invoicing
 - **Expected Gross Margin:** 80–95% at published pricing
 
 ### Cost Protection
