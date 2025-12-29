@@ -164,7 +164,7 @@ const response = await fetch('/quickjob', {
 - Maximum 5MB per image
 - Maximum 10MB total payload
 - Maximum 10000x10000 pixels per image
-- Maximum 100 images (truncated, not rejected)
+- Maximum images per request: Same as page limit per environment (e.g., 2 images in dev, 100 images in prod). Each image = 1 page. If exceeded, request is rejected with `400 PAGE_LIMIT_EXCEEDED` error (no truncation).
 
 ### 1.3 Validation Rules (Summary)
 
@@ -188,7 +188,7 @@ const response = await fetch('/quickjob', {
    - Each image must be ≤ 5 MB.
    - Total payload must be ≤ 10 MB.
    - Image dimensions must be ≤ 10000x10000 pixels.
-   - If more than 100 images, only first 100 are processed (truncated, not rejected).
+   - Image count must not exceed page limit per environment (e.g., 2 images in dev, 100 images in prod). Each image = 1 page. If exceeded, request is rejected with `400 PAGE_LIMIT_EXCEEDED` error before conversion.
 
 5. **Business Logic**
    - Free tier:
@@ -197,7 +197,7 @@ const response = await fetch('/quickjob', {
    - Paid plan:
      - No quota; still subject to API Gateway throttling.
    - **Page Limit (HTML/Markdown):** Maximum page limit is enforced per environment (e.g., 2 pages in dev, 100 pages in prod). If the generated PDF exceeds this limit, the request is rejected with **400** `PAGE_LIMIT_EXCEEDED` error. No truncation is performed.
-   - **Page Limit (Images):** Maximum 100 images. If exceeded, images are truncated to first 100 and `X-PDF-Truncated: true` header is returned.
+   - **Page Limit (Images):** Same maximum page limit as HTML/Markdown (e.g., 2 pages in dev, 100 pages in prod). Each image = 1 page. The image count is checked **before conversion**. If the image count exceeds the page limit, the request is rejected with **400** `PAGE_LIMIT_EXCEEDED` error. No truncation is performed.
 
 ### 1.4 Response
 
@@ -219,7 +219,7 @@ X-Job-Id: 9f0a4b78-2c0c-4d14-9b8b-123456789abc
 **Notes:**
 - Maximum page limit is enforced per environment (e.g., 2 pages in dev, 100 pages in prod).
 - **For HTML/Markdown:** If the rendered PDF exceeds the maximum page limit, the request is rejected with a `400 Bad Request` error (`PAGE_LIMIT_EXCEEDED`). No truncation is performed.
-- **For Images:** If more than 100 images are provided, only the first 100 are processed. The `X-PDF-Truncated` header will be `true` in this case.
+- **For Images:** The image count is checked **before conversion** (1 image = 1 page). If the image count exceeds the maximum page limit, the request is rejected with a `400 Bad Request` error (`PAGE_LIMIT_EXCEEDED`). No truncation is performed.
 
 #### 1.4.2 Timeout Response
 
