@@ -2,6 +2,7 @@
  * LongJob handler
  * Handles: POST /longjob
  * Asynchronous PDF generation with queueing, S3 storage, and webhook notifications
+ * Note: Image uploads are not supported in longjob - use /quickjob for images
  */
 
 const { SQSClient, SendMessageCommand } = require('@aws-sdk/client-sqs');
@@ -42,6 +43,20 @@ async function handler(event) {
           },
         }),
       };
+    }
+
+    // Check if this is a multipart/form-data request (image upload)
+    // Images are not supported in longjob - they complete fast enough for quickjob
+    const headers = event.headers || {};
+    const contentType = headers['content-type'] || headers['Content-Type'] || '';
+    if (contentType.includes('multipart/form-data')) {
+      logger.info('Rejecting multipart request in longjob - images not supported', {
+        contentType,
+      });
+      return BadRequest.INVALID_PARAMETER(
+        'content-type',
+        'Image uploads (multipart/form-data) are not supported in /longjob. Use /quickjob for image-to-PDF conversion - images are fast enough to complete within the 30-second timeout.'
+      );
     }
 
     // Parse request body

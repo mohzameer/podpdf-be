@@ -49,7 +49,7 @@ Authorization: Bearer <api_key>
 
 **Method:** `POST`  
 **Path:** `/quickjob`  
-**Content-Type:** `application/json`
+**Content-Type:** `application/json` (for HTML/Markdown) or `multipart/form-data` (for Images)
 
 #### 1.2.1 Request Body (HTML)
 
@@ -91,8 +91,47 @@ Authorization: Bearer <api_key>
 }
 ```
 
-#### 1.2.3 Request Fields
+#### 1.2.3 Request Body (Images - Multipart)
 
+**Content-Type:** `multipart/form-data`
+
+```bash
+# cURL example
+curl -X POST https://api.podpdf.com/quickjob \
+  -H "Authorization: Bearer <token>" \
+  -F "input_type=image" \
+  -F "images=@photo1.png" \
+  -F "images=@photo2.jpg" \
+  -F 'options={"format":"A4","fit":"contain"}'
+```
+
+```javascript
+// JavaScript/Browser example
+const formData = new FormData();
+formData.append('input_type', 'image');
+formData.append('images', file1);  // File object from input[type=file]
+formData.append('images', file2);
+formData.append('options', JSON.stringify({
+  format: 'A4',
+  margin: { top: '10mm', right: '10mm', bottom: '10mm', left: '10mm' },
+  fit: 'contain'
+}));
+
+const response = await fetch('/quickjob', {
+  method: 'POST',
+  headers: { 'Authorization': `Bearer ${token}` },
+  body: formData
+});
+```
+
+**Form Fields:**
+- `input_type` (string, required): Must be `"image"`
+- `images` (file, required): One or more image files (PNG or JPEG). Repeat field for multiple images.
+- `options` (string, optional): JSON string with PDF options
+
+#### 1.2.4 Request Fields
+
+**For HTML/Markdown (JSON):**
 - `input_type` (string, required)
   - Must be `"html"` or `"markdown"`.
 - `html` (string, required if `input_type` is `"html"`)
@@ -108,6 +147,25 @@ Authorization: Bearer <api_key>
     - `landscape` (boolean): default `false`.
     - `preferCSSPageSize` (boolean): default `false`.
 
+**For Images (Multipart):**
+- `input_type` (string, required): Must be `"image"`
+- `images` (file, required): One or more PNG/JPEG image files
+- `options` (string, optional): JSON string with options:
+  - `format` (string): Page size `"A4"`, `"Letter"`, etc. Default: `"A4"`
+  - `margin` (object): `top`, `right`, `bottom`, `left` (e.g., `"10mm"`). Default: `10mm` all sides
+  - `fit` (string): How to fit image on page:
+    - `"contain"` (default): Fit whole image, maintain aspect ratio
+    - `"cover"`: Fill entire page, may crop
+    - `"fill"`: Stretch to fill (may distort)
+    - `"none"`: Use natural size
+  - `landscape` (boolean): Page orientation. Default: `false`
+
+**Image Limits:**
+- Maximum 5MB per image
+- Maximum 10MB total payload
+- Maximum 10000x10000 pixels per image
+- Maximum 100 images (truncated, not rejected)
+
 ### 1.3 Validation Rules (Summary)
 
 1. **Authentication**
@@ -117,19 +175,29 @@ Authorization: Bearer <api_key>
 2. **Account**
    - `Users` record must exist for the `sub`; otherwise **403** (`ACCOUNT_NOT_FOUND`).
 
-3. **Body**
+3. **Body (HTML/Markdown - JSON)**
    - `input_type` must be `"html"` or `"markdown"`.
    - Exactly one of `html` or `markdown` must be provided (non-empty).
    - Content must match `input_type` (basic starting-tag check).
    - Input size must be ≤ ~5 MB.
 
-4. **Business Logic**
+4. **Body (Images - Multipart)**
+   - `input_type` must be `"image"`.
+   - At least one image file must be provided in the `images` field.
+   - Each image must be PNG or JPEG format.
+   - Each image must be ≤ 5 MB.
+   - Total payload must be ≤ 10 MB.
+   - Image dimensions must be ≤ 10000x10000 pixels.
+   - If more than 100 images, only first 100 are processed (truncated, not rejected).
+
+5. **Business Logic**
    - Free tier:
      - Per-user rate limit: 20 req/min (**403** `RATE_LIMIT_EXCEEDED` on breach).
      - All-time quota: Configurable per plan via `monthly_quota` in `Plans` table (default: 100 PDFs from `FREE_TIER_QUOTA` environment variable) (**403** `QUOTA_EXCEEDED` after that; must upgrade).
    - Paid plan:
      - No quota; still subject to API Gateway throttling.
-   - **Page Limit:** Maximum page limit is enforced per environment (e.g., 2 pages in dev, 100 pages in prod). If the generated PDF exceeds this limit, the request is rejected with **400** `PAGE_LIMIT_EXCEEDED` error. No truncation is performed.
+   - **Page Limit (HTML/Markdown):** Maximum page limit is enforced per environment (e.g., 2 pages in dev, 100 pages in prod). If the generated PDF exceeds this limit, the request is rejected with **400** `PAGE_LIMIT_EXCEEDED` error. No truncation is performed.
+   - **Page Limit (Images):** Maximum 100 images. If exceeded, images are truncated to first 100 and `X-PDF-Truncated: true` header is returned.
 
 ### 1.4 Response
 
@@ -142,6 +210,7 @@ Authorization: Bearer <api_key>
 Content-Type: application/pdf
 Content-Disposition: inline; filename="document.pdf"
 X-PDF-Pages: 42
+X-PDF-Truncated: false
 X-Job-Id: 9f0a4b78-2c0c-4d14-9b8b-123456789abc
 ```
 
@@ -149,8 +218,8 @@ X-Job-Id: 9f0a4b78-2c0c-4d14-9b8b-123456789abc
 
 **Notes:**
 - Maximum page limit is enforced per environment (e.g., 2 pages in dev, 100 pages in prod).
-- If the rendered PDF exceeds the maximum page limit, the request is rejected with a `400 Bad Request` error (`PAGE_LIMIT_EXCEEDED`).
-- No truncation is performed - the entire request is rejected if the limit is exceeded.
+- **For HTML/Markdown:** If the rendered PDF exceeds the maximum page limit, the request is rejected with a `400 Bad Request` error (`PAGE_LIMIT_EXCEEDED`). No truncation is performed.
+- **For Images:** If more than 100 images are provided, only the first 100 are processed. The `X-PDF-Truncated` header will be `true` in this case.
 
 #### 1.4.2 Timeout Response
 
@@ -184,6 +253,13 @@ Common error statuses:
   - Content type mismatch
   - Input size exceeds limit
   - PDF page count exceeds maximum allowed pages (`PAGE_LIMIT_EXCEEDED`)
+  - **Image-specific errors:**
+    - `INVALID_IMAGE_FORMAT` - Image is not PNG or JPEG
+    - `INVALID_IMAGE_DATA` - Image is corrupted or invalid
+    - `IMAGE_TOO_LARGE` - Image exceeds 5MB or 10000x10000 pixels
+    - `MISSING_IMAGES` - No image files in multipart request
+    - `INVALID_MULTIPART` - Malformed multipart/form-data request
+    - `INVALID_OPTIONS_JSON` - Options field is not valid JSON
 
 - `401 Unauthorized`
   - Missing or invalid authentication (neither valid JWT nor API key provided)
@@ -212,6 +288,8 @@ For full error payload examples and codes, see `ERRORS.md`.
 
 **Description:**  
 Asynchronous PDF generation with queueing, S3 storage, and webhook notifications. Use for larger documents or when you need webhook callbacks.
+
+**Note:** Image uploads (multipart/form-data) are **not supported** in `/longjob`. Use `/quickjob` for image-to-PDF conversion - images process fast enough (~0.5-2s per image) to complete within the 30-second timeout.
 
 ### 2.1 Authentication
 
@@ -453,7 +531,7 @@ Authorization: Bearer <jwt_token>
 - `job_id` (string): UUID of the job.
 - `status` (string): `"queued"`, `"processing"`, `"completed"`, `"failed"`, or `"timeout"` (quick jobs only).
 - `job_type` (string): `"quick"` or `"long"`.
-- `mode` (string): `"html"` or `"markdown"`.
+- `mode` (string): `"html"`, `"markdown"`, or `"image"`.
 - `pages` (number, optional): Number of pages in the returned PDF (present when completed).
 - `truncated` (boolean, optional): Always `false` (truncation is no longer performed; requests exceeding page limit are rejected).
 - `created_at` (string): ISO 8601 timestamp.

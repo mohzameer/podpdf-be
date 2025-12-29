@@ -320,11 +320,16 @@ Client → API Gateway → Lambda (longjob) → SQS Queue
    - Client authenticates via Cognito and receives a JWT token
 
 2. **Request Submission**
-   - Client sends `POST /quickjob` with JSON payload containing:
-     - `input_type` (string, required): Either `"html"` or `"markdown"`
-     - `html` (string, optional): HTML content (required if `input_type` is `"html"`)
-     - `markdown` (string, optional): Markdown content (required if `input_type` is `"markdown"`)
-     - `options` (object, optional): Rendering options
+   - Client sends `POST /quickjob` with:
+     - **For HTML/Markdown:** JSON payload containing:
+       - `input_type` (string, required): `"html"` or `"markdown"`
+       - `html` (string): HTML content (required if `input_type` is `"html"`)
+       - `markdown` (string): Markdown content (required if `input_type` is `"markdown"`)
+       - `options` (object, optional): Rendering options
+     - **For Images:** Multipart/form-data containing:
+       - `input_type` (string, required): `"image"`
+       - `images` (files, required): One or more PNG/JPEG image files
+       - `options` (string, optional): JSON string with PDF options
 
 3. **API Gateway Processing**
    - No authorizer configured for `/quickjob` (authentication handled in Lambda)
@@ -882,6 +887,44 @@ The following endpoints will be needed for API key management (to be implemented
 - Markdown to HTML conversion happens instantly in-memory
 - Zero additional cost for Markdown processing
 - Uses lightweight library (marked or markdown-it)
+
+### Images (PNG/JPEG)
+
+**Overview:**
+- Convert single or multiple images to PDF
+- Each image becomes one page in the PDF
+- Uses multipart/form-data for efficient binary uploads (no base64 overhead)
+- Processed using Sharp + pdf-lib (fast, low memory, no Chromium needed)
+
+**Supported Formats:**
+- PNG (`.png`) - Portable Network Graphics
+- JPEG/JPG (`.jpg`, `.jpeg`) - Joint Photographic Experts Group
+
+**Request Format:**
+- Content-Type: `multipart/form-data`
+- Fields:
+  - `input_type`: Must be `"image"`
+  - `images`: One or more image files (can repeat field for multiple images)
+  - `options`: JSON string with PDF options (optional)
+
+**Image-Specific Options:**
+- `fit`: How to fit image on page
+  - `"contain"` (default): Fit whole image, maintain aspect ratio
+  - `"cover"`: Fill entire page, may crop image
+  - `"fill"`: Stretch image to fill page (may distort)
+  - `"none"`: Use image's natural size
+
+**Limits:**
+- Maximum 5MB per image
+- Maximum 10MB total payload
+- Maximum 10000x10000 pixels per image
+- Maximum 100 images per request (truncated, not rejected)
+
+**Performance:**
+- Single image: ~0.5-1 second (vs 2-3s for HTML)
+- 10 images: ~2-4 seconds
+- No Chromium cold start overhead
+- ~60% lower Lambda cost than HTML/Markdown
 
 ---
 

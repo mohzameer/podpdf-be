@@ -36,10 +36,20 @@ function validateRequestBody(body) {
   const inputType = body.input_type.toLowerCase();
 
   // Validate input_type value
-  if (inputType !== 'html' && inputType !== 'markdown') {
+  if (inputType !== 'html' && inputType !== 'markdown' && inputType !== 'image') {
     return {
       isValid: false,
-      error: BadRequest.INVALID_INPUT_TYPE(inputType, ['html', 'markdown']),
+      error: BadRequest.INVALID_INPUT_TYPE(inputType, ['html', 'markdown', 'image']),
+      data: null,
+    };
+  }
+
+  // Image input type is handled separately via multipart
+  // If we get here with input_type: 'image' in JSON body, it's an error
+  if (inputType === 'image') {
+    return {
+      isValid: false,
+      error: BadRequest.INVALID_PARAMETER('input_type', 'Image uploads must use multipart/form-data, not JSON'),
       data: null,
     };
   }

@@ -11,6 +11,11 @@ provider:
   # Default timeout for lightweight HTTP handlers (jobs, accounts, health)
   timeout: 10
   
+  # Configure API Gateway to handle binary media types (for multipart image uploads)
+  apiGateway:
+    binaryMediaTypes:
+      - 'multipart/form-data'
+  
   environment:
     STAGE: ${self:provider.stage}
     LOG_LEVEL: ${self:custom.stages.${self:provider.stage}.logLevel}
@@ -19,6 +24,8 @@ provider:
     MAX_PAGES: ${self:custom.stages.${self:provider.stage}.maxPages}
     MAX_INPUT_SIZE_MB: 5
     QUICKJOB_TIMEOUT_SECONDS: 30
+    MAX_IMAGES: 100
+    MAX_IMAGE_SIZE_MB: 5
     USERS_TABLE: ${self:custom.tableNames.${self:provider.stage}.users}
     USER_RATE_LIMITS_TABLE: ${self:custom.tableNames.${self:provider.stage}.userRateLimitsV2}
     JOB_DETAILS_TABLE: ${self:custom.tableNames.${self:provider.stage}.jobDetails}

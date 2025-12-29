@@ -2,6 +2,7 @@
  * QuickJob handler
  * Handles: POST /quickjob
  * Synchronous PDF generation for small documents (<30 seconds)
+ * Supports: HTML, Markdown (JSON), and Images (multipart/form-data)
  */
 
 const logger = require('../utils/logger');
@@ -20,9 +21,19 @@ const {
   createAnalyticsRecord,
 } = require('../services/jobTracking');
 const { generatePDF } = require('../services/pdf');
+const { imagesToPdf, validateImages } = require('../services/imagePdf');
 const { BadRequest, Forbidden, InternalServerError, RequestTimeout } = require('../utils/errors');
 
+// Multipart parser
+let multipart;
+try {
+  multipart = require('lambda-multipart-parser');
+} catch (e) {
+  // Will be loaded when needed
+}
+
 const QUICKJOB_TIMEOUT_SECONDS = parseInt(process.env.QUICKJOB_TIMEOUT_SECONDS || '30', 10);
+const MAX_PAGES = parseInt(process.env.MAX_PAGES || '100', 10);
 
 /**
  * POST /quickjob - Generate PDF synchronously
@@ -67,21 +78,81 @@ async function handler(event) {
       };
     }
 
-    // Parse request body
-    let body;
-    try {
-      body = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
-    } catch (error) {
-      return BadRequest.MISSING_INPUT_TYPE();
-    }
+    // Check if this is a multipart/form-data request (image upload)
+    const contentType = headers['content-type'] || headers['Content-Type'] || '';
+    const isMultipart = contentType.includes('multipart/form-data');
+    
+    let inputType, content, options, images;
+    
+    if (isMultipart) {
+      // Handle multipart/form-data (image uploads)
+      try {
+        if (!multipart) {
+          multipart = require('lambda-multipart-parser');
+        }
+        
+        const parsed = await multipart.parse(event);
+        
+        // Get input_type from form field
+        inputType = parsed.input_type?.toLowerCase();
+        
+        if (!inputType) {
+          return BadRequest.MISSING_INPUT_TYPE();
+        }
+        
+        if (inputType !== 'image') {
+          return BadRequest.INVALID_PARAMETER('input_type', 'Multipart requests only support input_type: image');
+        }
+        
+        // Get images from files
+        images = (parsed.files || [])
+          .filter(f => f.fieldname === 'images')
+          .map(f => ({
+            buffer: f.content,
+            contentType: f.contentType,
+            filename: f.filename,
+          }));
+        
+        if (images.length === 0) {
+          return BadRequest.MISSING_IMAGES();
+        }
+        
+        // Parse options if provided
+        try {
+          options = parsed.options ? JSON.parse(parsed.options) : {};
+        } catch (e) {
+          return BadRequest.INVALID_OPTIONS_JSON();
+        }
+        
+        logger.info('Multipart request parsed', {
+          inputType,
+          imageCount: images.length,
+          hasOptions: !!parsed.options,
+        });
+        
+      } catch (error) {
+        logger.error('Multipart parsing error', { error: error.message });
+        return BadRequest.INVALID_MULTIPART(error.message);
+      }
+    } else {
+      // Handle JSON request (HTML/Markdown)
+      let body;
+      try {
+        body = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
+      } catch (error) {
+        return BadRequest.MISSING_INPUT_TYPE();
+      }
 
-    // Validate request body
-    const validation = validateRequestBody(body);
-    if (!validation.isValid) {
-      return validation.error;
-    }
+      // Validate request body
+      const validation = validateRequestBody(body);
+      if (!validation.isValid) {
+        return validation.error;
+      }
 
-    const { inputType, content, options } = validation.data;
+      inputType = validation.data.inputType;
+      content = validation.data.content;
+      options = validation.data.options;
+    }
 
     // Get user account and plan
     let user, plan, userId;
@@ -181,10 +252,66 @@ async function handler(event) {
     // Generate PDF with timeout
     let pdfResult;
     try {
-      pdfResult = await Promise.race([
-        generatePDF(content, inputType, options),
-        timeoutPromise,
-      ]);
+      if (inputType === 'image') {
+        // Check page limit BEFORE conversion (1 image = 1 page)
+        const imageCount = images.length;
+        if (imageCount > MAX_PAGES) {
+          logger.warn('Image count exceeds page limit', {
+            imageCount,
+            maxPages: MAX_PAGES,
+          });
+          await updateJobRecord(jobId, {
+            status: 'failed',
+            error_message: `Image count (${imageCount}) exceeds maximum allowed pages (${MAX_PAGES})`,
+          });
+
+          await createAnalyticsRecord({
+            jobId,
+            jobType: 'quick',
+            mode: inputType,
+            status: 'failed',
+            jobDuration: Date.now() - startTime,
+          });
+
+          return BadRequest.PAGE_LIMIT_EXCEEDED(imageCount, MAX_PAGES);
+        }
+
+        // Validate images
+        const imageValidation = await validateImages(images);
+        if (!imageValidation.valid) {
+          const firstError = imageValidation.errors[0];
+          if (firstError.error === 'MISSING_IMAGES') {
+            return BadRequest.MISSING_IMAGES();
+          } else if (firstError.error === 'PAYLOAD_TOO_LARGE') {
+            return BadRequest.INPUT_SIZE_EXCEEDED(10);
+          } else if (firstError.error === 'INVALID_IMAGE_FORMAT') {
+            return BadRequest.INVALID_IMAGE_FORMAT(firstError.details);
+          } else if (firstError.error === 'IMAGE_TOO_LARGE') {
+            return BadRequest.IMAGE_TOO_LARGE(firstError.details);
+          } else {
+            return BadRequest.INVALID_IMAGE_DATA(firstError.details);
+          }
+        }
+        
+        // Generate PDF from images
+        pdfResult = await Promise.race([
+          imagesToPdf(images, options),
+          timeoutPromise,
+        ]);
+        
+        // Map the result format to match generatePDF output
+        pdfResult = {
+          pdf: pdfResult.buffer,
+          pages: pdfResult.pageCount,
+          truncated: pdfResult.truncated,
+        };
+      } else {
+        // Generate PDF from HTML/Markdown
+        pdfResult = await Promise.race([
+          generatePDF(content, inputType, options),
+          timeoutPromise,
+        ]);
+      }
     } catch (error) {
       if (error.message === 'QUICKJOB_TIMEOUT') {
         // Timeout occurred
@@ -229,13 +356,13 @@ async function handler(event) {
       throw error;
     }
 
-    const { pdf, pages } = pdfResult;
+    const { pdf, pages, truncated = false } = pdfResult;
 
     // Update job record with completion
     await updateJobRecord(jobId, {
       status: 'completed',
       pages,
-      truncated: false,
+      truncated,
     });
 
     // Increment PDF count and track billing
@@ -258,6 +385,7 @@ async function handler(event) {
         'Content-Type': 'application/pdf',
         'Content-Disposition': 'inline; filename="document.pdf"',
         'X-PDF-Pages': pages.toString(),
+        'X-PDF-Truncated': truncated.toString(),
         'X-Job-Id': jobId,
       },
       body: pdf.toString('base64'),

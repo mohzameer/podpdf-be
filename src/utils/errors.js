@@ -31,12 +31,12 @@ function createErrorResponse(statusCode, code, message, details = {}) {
  * Bad Request (400) errors
  */
 const BadRequest = {
-  INVALID_INPUT_TYPE: (provided, allowed) =>
+  INVALID_INPUT_TYPE: (provided, allowed = ['html', 'markdown', 'image']) =>
     createErrorResponse(
       400,
       'INVALID_INPUT_TYPE',
-      `input_type must be either 'html' or 'markdown'`,
-      { provided, allowed: ['html', 'markdown'] }
+      `input_type must be one of: ${allowed.map(a => `'${a}'`).join(', ')}`,
+      { provided, allowed }
     ),
 
   MISSING_INPUT_TYPE: () =>
@@ -138,6 +138,55 @@ const BadRequest = {
       'INVALID_WEBHOOK_URL',
       'webhook_url must be a valid HTTPS URL',
       { action_required: 'provide_valid_https_url' }
+    ),
+
+  // Image-specific errors
+  INVALID_IMAGE_FORMAT: (details = {}) =>
+    createErrorResponse(
+      400,
+      'INVALID_IMAGE_FORMAT',
+      details.message || 'Image format not supported. Only PNG and JPEG are allowed.',
+      details
+    ),
+
+  INVALID_IMAGE_DATA: (details = {}) =>
+    createErrorResponse(
+      400,
+      'INVALID_IMAGE_DATA',
+      details.message || 'Image data is corrupted or invalid.',
+      details
+    ),
+
+  IMAGE_TOO_LARGE: (details = {}) =>
+    createErrorResponse(
+      400,
+      'IMAGE_TOO_LARGE',
+      details.message || 'Image exceeds size or dimension limits.',
+      details
+    ),
+
+  MISSING_IMAGES: () =>
+    createErrorResponse(
+      400,
+      'MISSING_IMAGES',
+      'No image files provided in multipart request.',
+      { action_required: 'provide_image_files' }
+    ),
+
+  INVALID_MULTIPART: (message = 'Malformed multipart/form-data request') =>
+    createErrorResponse(
+      400,
+      'INVALID_MULTIPART',
+      message,
+      { action_required: 'send_valid_multipart_request' }
+    ),
+
+  INVALID_OPTIONS_JSON: (message = 'Options field is not valid JSON') =>
+    createErrorResponse(
+      400,
+      'INVALID_OPTIONS_JSON',
+      message,
+      { action_required: 'provide_valid_json_options' }
     ),
 };
 
