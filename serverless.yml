@@ -219,6 +219,10 @@ functions:
           method: get
           authorizer: cognitoAuthorizer
       - httpApi:
+          path: /accounts/me/stats
+          method: get
+          authorizer: cognitoAuthorizer
+      - httpApi:
           path: /accounts/me/upgrade
           method: put
           authorizer: cognitoAuthorizer

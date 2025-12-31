@@ -1023,7 +1023,7 @@ Authorization: Bearer <jwt_token>
 - Token must be valid and not expired.
 - User account must exist in `Users`.
 
-### 14.2 HTTP Request
+### 8.2 HTTP Request
 
 **Method:** `GET`  
 **Path:** `/accounts/me`
@@ -1368,7 +1368,135 @@ curl -X GET https://api.podpdf.com/accounts/me/bills \
 
 ---
 
-## 11. `PUT /accounts/me/upgrade`
+## 11. `GET /accounts/me/stats`
+
+**Description:**  
+Get total PDF count, monthly PDF count, and total amount for the authenticated user. For free plans, returns all-time PDF count from the Users table and current month's PDF count from the Bills table. For paid plans, returns current month's PDF count and billing amount from the Bills table.
+
+### 11.1 Authentication
+
+- **Type:** JWT Bearer Token (Amazon Cognito)
+- **Header:**
+
+```http
+Authorization: Bearer <jwt_token>
+```
+
+**Requirements:**
+- Token must be valid and not expired.
+- User account must exist in `Users`.
+
+### 11.2 HTTP Request
+
+**Method:** `GET`  
+**Path:** `/accounts/me/stats`
+
+### 11.3 Response
+
+#### 11.3.1 Success Response
+
+- **Status:** `200 OK`
+- **Content-Type:** `application/json`
+- **Body:**
+
+**For Paid Plan Users:**
+```json
+{
+  "stats": {
+    "plan_id": "paid-standard",
+    "plan_type": "paid",
+    "total_pdf_count": 25,
+    "total_pdf_count_month": 25,
+    "total_amount": 0.125
+  }
+}
+```
+
+**For Free Plan Users:**
+```json
+{
+  "stats": {
+    "plan_id": "free-basic",
+    "plan_type": "free",
+    "total_pdf_count": 42,
+    "total_pdf_count_month": 5,
+    "total_amount": 0
+  }
+}
+```
+
+**Fields:**
+- `plan_id` (string): Current plan ID.
+- `plan_type` (string): `"free"` or `"paid"`.
+- `total_pdf_count` (number): 
+  - **For free plan users:** All-time PDF count from Users table (cumulative total since account creation, does not reset).
+  - **For paid plan users:** Current month's PDF count from Bills table (resets each month).
+- `total_pdf_count_month` (number): Current month's PDF count from Bills table for the current month. `0` if no bill record exists for the current month. This field is available for both free and paid plan users.
+- `total_amount` (number): 
+  - **For free plan users:** Always `0` (free plans have no billing).
+  - **For paid plan users:** Current month's billing amount in USD from Bills table. `0` if no bill exists for current month.
+
+#### 11.3.2 Error Responses
+
+- `401 Unauthorized` – Missing or invalid JWT.
+- `403 Forbidden` – Account not found (`ACCOUNT_NOT_FOUND`).
+- `500 Internal Server Error` – Server-side failure.
+
+### 11.4 Example Request
+
+```bash
+curl -X GET https://api.podpdf.com/accounts/me/stats \
+  -H "Authorization: Bearer <jwt_token>"
+```
+
+### 11.5 Example Response
+
+**Paid Plan User:**
+```json
+{
+  "stats": {
+    "plan_id": "paid-standard",
+    "plan_type": "paid",
+    "total_pdf_count": 25,
+    "total_pdf_count_month": 25,
+    "total_amount": 0.125
+  }
+}
+```
+
+**Free Plan User:**
+```json
+{
+  "stats": {
+    "plan_id": "free-basic",
+    "plan_type": "free",
+    "total_pdf_count": 42,
+    "total_pdf_count_month": 5,
+    "total_amount": 0
+  }
+}
+```
+
+### 11.6 Usage Notes
+
+- **PDF Count Behavior:**
+  - **Free Plan Users:** 
+    - `total_pdf_count` shows the **all-time total** from the Users table (cumulative since account creation, does not reset).
+    - `total_pdf_count_month` shows the **current month's count** from the Bills table (resets each month). Returns `0` if no bill record exists for the current month.
+  - **Paid Plan Users:** 
+    - `total_pdf_count` shows the **current month's count only** from the Bills table (resets each month).
+    - `total_pdf_count_month` shows the **current month's count** from the Bills table (same as `total_pdf_count` for paid users). Returns `0` if no bill record exists for the current month.
+- **Amount Behavior:**
+  - **Free Plan Users:** `total_amount` is always `0` (free plans have no billing).
+  - **Paid Plan Users:** `total_amount` shows the current month's billing amount from the Bills table. Returns `0` if no bill record exists for the current month (e.g., new month with no PDFs generated yet).
+- **Data Source:**
+  - Free plans: `total_pdf_count` comes from `Users.total_pdf_count`, `total_pdf_count_month` comes from `Bills.monthly_pdf_count` for the current month.
+  - Paid plans: Both `total_pdf_count` and `total_pdf_count_month` come from `Bills.monthly_pdf_count` for the current month, and `total_amount` comes from `Bills.monthly_billing_amount` for the current month.
+- **Current Month:** The current month is calculated as `YYYY-MM` format (e.g., `"2025-12"` for December 2025). Both free and paid plan users can see their current month's PDF count via `total_pdf_count_month`.
+
+---
+
+## 12. `PUT /accounts/me/upgrade`
 
 **Description:**  
 Upgrade a user account from free tier to a paid plan. This endpoint clears the `quota_exceeded` flag and updates the user's plan.
@@ -1539,7 +1667,7 @@ curl -X PUT https://api.podpdf.com/accounts/me/upgrade \
 
 ---
 
-## 12. `PUT /accounts/me/webhook`
+## 13. `PUT /accounts/me/webhook`
 
 **Description:**  
 Configure user's default webhook URL for long job notifications.
@@ -1608,7 +1736,7 @@ Authorization: Bearer <jwt_token>
 
 ---
 
-## 13. `DELETE /accounts/me`
+## 14. `DELETE /accounts/me`
 
 **Description:**  
 Delete the authenticated user's account and all associated data.
@@ -1652,7 +1780,7 @@ Authorization: Bearer <jwt_token>
 
 ---
 
-## 14. API Key Management
+## 15. API Key Management
 
 The following endpoints allow users to create, list, and revoke API keys for programmatic access to the `/quickjob` and `/longjob` endpoints.
 
@@ -1660,12 +1788,12 @@ The following endpoints allow users to create, list, and revoke API keys for pro
 
 ---
 
-### 14.1 `POST /accounts/me/api-keys`
+### 15.1 `POST /accounts/me/api-keys`
 
 **Description:**  
 Create a new API key for the authenticated user. The full API key is returned only once on creation. Store it securely as it cannot be retrieved again.
 
-#### 14.1.1 Authentication
+#### 15.1.1 Authentication
 
 - **Type:** JWT Bearer Token (Amazon Cognito) - **Required**
 - **Header:**
@@ -1679,7 +1807,7 @@ Authorization: Bearer <jwt_token>
 - User account must exist in `Users`.
 - **Note:** API keys cannot be used to authenticate to this endpoint.
 
-#### 14.1.2 HTTP Request
+#### 15.1.2 HTTP Request
 
 **Method:** `POST`  
 **Path:** `/accounts/me/api-keys`  
@@ -1695,7 +1823,7 @@ Authorization: Bearer <jwt_token>
 **Fields:**
 - `name` (string, optional): A descriptive name for the API key (e.g., "Production", "Development", "Mobile App"). If not provided, defaults to `null`.
 
-#### 14.1.3 Response
+#### 15.1.3 Response
 
 **Success Response (201 Created):**
 ```json
@@ -1727,12 +1855,12 @@ Authorization: Bearer <jwt_token>
 
 ---
 
-### 14.2 `GET /accounts/me/api-keys`
+### 15.2 `GET /accounts/me/api-keys`
 
 **Description:**  
 List all API keys for the authenticated user. The full API key is never returned in the list (only a prefix is shown for identification).
 
-#### 14.2.1 Authentication
+#### 15.2.1 Authentication
 
 - **Type:** JWT Bearer Token (Amazon Cognito) - **Required**
 - **Header:**
@@ -1746,12 +1874,12 @@ Authorization: Bearer <jwt_token>
 - User account must exist in `Users`.
 - **Note:** API keys cannot be used to authenticate to this endpoint.
 
-#### 14.2.2 HTTP Request
+#### 15.2.2 HTTP Request
 
 **Method:** `GET`  
 **Path:** `/accounts/me/api-keys`
 
-#### 14.2.3 Response
+#### 15.2.3 Response
 
 **Success Response (200 OK):**
 ```json
@@ -1798,12 +1926,12 @@ Authorization: Bearer <jwt_token>
 
 ---
 
-### 14.3 `DELETE /accounts/me/api-keys/{api_key_id}`
+### 15.3 `DELETE /accounts/me/api-keys/{api_key_id}`
 
 **Description:**  
 Revoke an API key. The key is immediately deactivated and cannot be used for authentication. This action cannot be undone, but you can create a new API key if needed.
 
-#### 14.3.1 Authentication
+#### 15.3.1 Authentication
 
 - **Type:** JWT Bearer Token (Amazon Cognito) - **Required**
 - **Header:**
@@ -1817,7 +1945,7 @@ Authorization: Bearer <jwt_token>
 - User account must exist in `Users`.
 - **Note:** API keys cannot be used to authenticate to this endpoint.
 
-#### 14.3.2 HTTP Request
+#### 15.3.2 HTTP Request
 
 **Method:** `DELETE`  
 **Path:** `/accounts/me/api-keys/{api_key_id}`
@@ -1825,7 +1953,7 @@ Authorization: Bearer <jwt_token>
 **Path Parameters:**
 - `api_key_id` (string, required): The ULID of the API key to revoke (e.g., `01ARZ3NDEKTSV4RRFFQ69G5FAV`). This is returned when creating the API key and in the list response.
 
-#### 14.3.3 Response
+#### 15.3.3 Response
 
 **Success Response (200 OK):**
 ```json
@@ -1856,7 +1984,7 @@ Authorization: Bearer <jwt_token>
 
 ---
 
-## 15. Health Check (Optional, Internal)
+## 16. Health Check (Optional, Internal)
 
 > **Note:** This endpoint is optional and not required for the public API. It is recommended for internal monitoring.
 
@@ -1887,7 +2015,7 @@ Implementation of `/health` is left to the service owner and may be internal-onl
 
 ---
 
-## 16. `POST /signup`
+## 17. `POST /signup`
 
 **Description:**  
 Create a new user account in Cognito. After signup, the user will receive a verification code via email. Once they confirm their email with the code, the **Post Confirmation Lambda trigger** will automatically create the DynamoDB account record. No additional API call is needed to create the account record.
@@ -2048,23 +2176,23 @@ curl -X POST https://api.podpdf.com/signup \
 
 ---
 
-## 17. `POST /confirm-signup`
+## 18. `POST /confirm-signup`
 
 **Description:**  
 Confirm user email with the verification code received via email. After successful confirmation, the **Post Confirmation Lambda trigger** will automatically create the DynamoDB account record. Once confirmed, the user can sign in using the `/signin` endpoint.
 
-### 13.1 Authentication
+### 18.1 Authentication
 
 - **Type:** None (public endpoint)
 - **Note:** This endpoint does not require authentication. It is used to confirm email addresses after signup.
 
-### 14.2 HTTP Request
+### 18.2 HTTP Request
 
 **Method:** `POST`  
 **Path:** `/confirm-signup`  
 **Content-Type:** `application/json`
 
-#### 13.2.1 Request Body
+#### 18.2.1 Request Body
 
 ```json
 {
@@ -2077,9 +2205,9 @@ Confirm user email with the verification code received via email. After successf
 - `email` (string, required) - User's email address (same email used in signup)
 - `confirmationCode` (string, required) - 6-digit verification code received via email
 
-### 14.3 HTTP Response
+### 18.3 HTTP Response
 
-#### 13.3.1 Success Response (200 OK)
+#### 18.3.1 Success Response (200 OK)
 
 ```json
 {
@@ -2203,23 +2331,23 @@ curl -X POST https://api.podpdf.com/confirm-signup \
 
 ---
 
-## 18. `POST /signin`
+## 19. `POST /signin`
 
 **Description:**  
 Authenticate a user with Cognito and return JWT tokens (ID token, access token, refresh token).
 
-### 14.1 Authentication
+### 19.1 Authentication
 
 - **Type:** None (public endpoint)
 - **Note:** This endpoint does not require authentication. It is used to obtain authentication tokens.
 
-### 14.2 HTTP Request
+### 19.2 HTTP Request
 
 **Method:** `POST`  
 **Path:** `/signin`  
 **Content-Type:** `application/json`
 
-#### 14.2.1 Request Body
+#### 19.2.1 Request Body
 
 ```json
 {
@@ -2232,9 +2360,9 @@ Authenticate a user with Cognito and return JWT tokens (ID token, access token, 
 - `email` (string, required) - User's email address (used as username in Cognito)
 - `password` (string, required) - User's password
 
-### 14.3 HTTP Response
+### 19.3 HTTP Response
 
-#### 14.3.1 Success Response (200 OK)
+#### 19.3.1 Success Response (200 OK)
 
 ```json
 {
@@ -2256,7 +2384,7 @@ Authenticate a user with Cognito and return JWT tokens (ID token, access token, 
   - `refreshToken` (string) - Refresh token (for obtaining new tokens)
   - `expiresIn` (number) - Token expiration time in seconds
 
-#### 14.3.2 Error Responses
+#### 19.3.2 Error Responses
 
 **400 Bad Request - Missing Fields**
 ```json
@@ -2323,7 +2451,7 @@ curl -X POST https://api.podpdf.com/signin \
 }
 ```
 
-### 14.6 Usage Notes
+### 19.6 Usage Notes
 
 - **Token Usage:** Use the `accessToken` in the `Authorization` header for authenticated API requests: `Authorization: Bearer <accessToken>`
 - **Token Expiration:** Tokens expire after 24 hours (as configured in Cognito). Use the `/refresh` endpoint with the `refreshToken` to obtain new tokens.
@@ -2338,7 +2466,7 @@ curl -X POST https://api.podpdf.com/signin \
 
 ---
 
-## 19. `POST /refresh`
+## 20. `POST /refresh`
 
 **Description:**  
 Refresh authentication tokens using a refresh token. Returns new ID token and access token.
@@ -2365,9 +2493,9 @@ Refresh authentication tokens using a refresh token. Returns new ID token and ac
 **Fields:**
 - `refreshToken` (string, required) - Refresh token obtained from `/signin` endpoint
 
-### 14.3 HTTP Response
+### 20.3 HTTP Response
 
-#### 13.3.1 Success Response (200 OK)
+#### 20.3.1 Success Response (200 OK)
 
 ```json
 {
@@ -2499,24 +2627,24 @@ When a long job completes, a POST request is sent to the configured webhook URL 
 
 ---
 
-## 14. `POST /webhook/job-done`
+## 21. `POST /webhook/job-done`
 
 **Description:**  
 Internal webhook receiver endpoint that receives job completion notifications from api.podpdf.com. This endpoint validates webhook payloads and processes job completion events. Designed for use by PodPDF's own internal services.
 
-### 14.1 Authentication
+### 21.1 Authentication
 
 - **Type:** None (public endpoint with payload validation)
 - **Security:** Payload structure validation and job verification prevent abuse
 - **Note:** This endpoint is intended for internal use by PodPDF services. External users should configure their own webhook URLs via `PUT /accounts/me/webhook`.
 
-### 14.2 HTTP Request
+### 21.2 HTTP Request
 
 **Method:** `POST`  
 **Path:** `/webhook/job-done`  
 **Content-Type:** `application/json`
 
-#### 14.2.1 Request Body
+#### 21.2.1 Request Body
 
 The webhook payload sent from api.podpdf.com when a job completes:
 
@@ -2548,7 +2676,7 @@ The webhook payload sent from api.podpdf.com when a job completes:
 - `completed_at` (string, optional): ISO 8601 timestamp when the job completed
 - `error_message` (string, optional): Error message if job failed
 
-### 14.3 Validation
+### 21.3 Validation
 
 The endpoint performs comprehensive validation to prevent abuse:
 
@@ -2571,9 +2699,9 @@ The endpoint performs comprehensive validation to prevent abuse:
    - Job must exist in the system
    - Job status must match the webhook payload status (prevents replay attacks)
 
-### 14.4 Response
+### 21.4 Response
 
-#### 14.4.1 Success Response
+#### 21.4.1 Success Response
 
 - **Status:** `200 OK`
 - **Content-Type:** `application/json`
@@ -2587,7 +2715,7 @@ The endpoint performs comprehensive validation to prevent abuse:
 }
 ```
 
-#### 14.4.2 Error Responses
+#### 21.4.2 Error Responses
 
 - `400 Bad Request` – Invalid payload structure, missing required fields, invalid field types, or payload size exceeds limit
   - Error code: `INVALID_PARAMETER`
@@ -2603,7 +2731,7 @@ The endpoint performs comprehensive validation to prevent abuse:
 - `500 Internal Server Error` – Server-side processing error
   - Error code: `INTERNAL_SERVER_ERROR`
 
-### 14.5 Security Features
+### 21.5 Security Features
 
 - **Payload Structure Validation:** Validates all fields before processing
 - **Job Existence Verification:** Ensures job exists before processing
@@ -2611,7 +2739,7 @@ The endpoint performs comprehensive validation to prevent abuse:
 - **Size Limits:** Prevents abuse with oversized payloads (100KB max)
 - **Comprehensive Logging:** All requests logged with source IP for monitoring
 
-### 14.6 Usage Notes
+### 21.6 Usage Notes
 
 - This endpoint is designed for internal PodPDF services
 - External users should configure their own webhook URLs via `PUT /accounts/me/webhook`

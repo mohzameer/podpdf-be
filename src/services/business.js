@@ -142,10 +142,14 @@ async function checkRateLimit(userId, plan) {
  */
 async function checkQuota(userSub, user, plan) {
   try {
+    // Normalize plan type for comparison (handle string/number/undefined cases)
+    const planType = plan?.type ? String(plan.type).toLowerCase().trim() : null;
+    const isPaidPlan = planType === 'paid';
+
     // If plan type is paid or plan has no monthly quota (paid tier), allow
-    if (plan.type === 'paid' || plan.monthly_quota === null || plan.monthly_quota === undefined) {
+    if (isPaidPlan || plan.monthly_quota === null || plan.monthly_quota === undefined) {
       // Only clear quota_exceeded flag if plan type is explicitly paid
-      if (plan.type === 'paid' && user.quota_exceeded && user.user_id) {
+      if (isPaidPlan && user.quota_exceeded && user.user_id) {
         try {
           await updateItem(
             USERS_TABLE,
@@ -162,7 +166,7 @@ async function checkQuota(userSub, user, plan) {
         }
       }
       // If it's a paid plan, allow
-      if (plan.type === 'paid') {
+      if (isPaidPlan) {
         return { allowed: true, error: null };
       }
       // If monthly_quota is null/undefined but plan type is not paid, fall through to use FREE_TIER_QUOTA
@@ -322,8 +326,9 @@ async function incrementPdfCount(userSub, userId, plan = null) {
     // For paid plans, create or update bill record in Bills table (only if charging)
     if (isPaidPlan && billingIncrement > 0) {
       try {
+        const { getItem, queryItems } = require('./dynamodb');
+        
         // Try to get existing bill for this month
-        const { getItem } = require('./dynamodb');
         const existingBill = await getItem(BILLS_TABLE, {
           user_id: userId,
           billing_month: currentMonth,
@@ -345,6 +350,44 @@ async function incrementPdfCount(userSub, userId, plan = null) {
             }
           );
         } else {
+          // New month detected - mark all previous month bills as inactive
+          try {
+            // Query all bills for this user
+            const allBills = await queryItems(
+              BILLS_TABLE,
+              'user_id = :user_id',
+              { ':user_id': userId },
+              null
+            );
+            
+            // Mark all bills from previous months as inactive
+            if (allBills && allBills.length > 0) {
+              for (const bill of allBills) {
+                if (bill.billing_month !== currentMonth && (bill.is_active === undefined || bill.is_active === true)) {
+                  await updateItem(
+                    BILLS_TABLE,
+                    {
+                      user_id: userId,
+                      billing_month: bill.billing_month,
+                    },
+                    'SET is_active = :false, updated_at = :updated_at',
+                    {
+                      ':false': false,
+                      ':updated_at': nowISO,
+                    }
+                  );
+                }
+              }
+            }
+          } catch (error) {
+            logger.warn('Error marking previous bills as inactive', {
+              error: error.message,
+              userSub,
+              userId,
+            });
+            // Continue with bill creation even if marking inactive fails
+          }
+          
           // Create new bill record for this month
           await putItem(BILLS_TABLE, {
             user_id: userId,
@@ -352,6 +395,7 @@ async function incrementPdfCount(userSub, userId, plan = null) {
             monthly_pdf_count: 1,
             monthly_billing_amount: billingIncrement,
             is_paid: false,
+            is_active: true,
             created_at: nowISO,
             updated_at: nowISO,
           });
