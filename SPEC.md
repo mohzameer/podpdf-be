@@ -213,7 +213,7 @@ Client → API Gateway → Lambda (longjob) → SQS Queue
    - **Attributes:**
      - `name` (String) - Human-readable plan name (e.g., `"Free Basic"`, `"Paid Standard"`)
      - `type` (String) - `"free"` or `"paid"`
-     - `monthly_quota` (Number, optional) - Number of PDFs included per month (e.g., `100` for free, `null` for unlimited paid)
+     - `monthly_quota` (Number, optional) - Number of PDFs included per month (e.g., `50` for free, `null` for unlimited paid)
      - `free_credits` (Number, optional) - Number of free PDF credits included with the plan (e.g., `100`). These credits are used before `price_per_pdf` billing starts. Defaults to `0` if not set.
      - `price_per_pdf` (Number) - Price per PDF (e.g., `0` for free, `0.01` for paid)
      - `rate_limit_per_minute` (Number, optional) - Per-user rate limit (e.g., `20` for free, `null` or higher value for paid)
@@ -667,10 +667,10 @@ Client → API Gateway → Lambda (longjob) → SQS Queue
       "plan_id": "free-basic",
       "name": "Free Basic",
       "type": "free",
-      "monthly_quota": 100,
+      "monthly_quota": 50,
       "price_per_pdf": 0,
       "rate_limit_per_minute": 20,
-      "description": "Free tier with 100 PDFs all-time quota (not monthly - cumulative, does not reset). Rate limit: 20 requests per minute.",
+      "description": "Free tier with 50 PDFs all-time quota (not monthly - cumulative, does not reset). Rate limit: 20 requests per minute.",
       "is_active": true
     },
     {
@@ -695,10 +695,10 @@ Client → API Gateway → Lambda (longjob) → SQS Queue
     "plan_id": "free-basic",
     "name": "Free Basic",
     "type": "free",
-    "monthly_quota": 100,
+    "monthly_quota": 50,
     "price_per_pdf": 0,
     "rate_limit_per_minute": 20,
-    "description": "Free tier with 100 PDFs all-time quota (not monthly - cumulative, does not reset). Rate limit: 20 requests per minute.",
+    "description": "Free tier with 50 PDFs all-time quota (not monthly - cumulative, does not reset). Rate limit: 20 requests per minute.",
     "is_active": true
   }
 }
@@ -1071,16 +1071,16 @@ The following endpoints will be needed for API key management (to be implemented
 
 ### Free Tier
 
-- **Allowance:** Configurable per plan via `monthly_quota` in `Plans` table (default: 100 PDFs from `FREE_TIER_QUOTA` environment variable)
+- **Allowance:** Configurable per plan via `monthly_quota` in `Plans` table (default: 50 PDFs from `FREE_TIER_QUOTA` environment variable)
 - **Tracking:** DynamoDB `Users` table
 - **No Reset:** Quota is cumulative and does not reset (all-time quota, not monthly)
 - **Enforcement:** Checked on every request using `plan.monthly_quota` from `Plans` table
 - **After Quota Exceeded:** User must upgrade to paid plan to continue using the service
-- **Quota Source:** Quota is read from the plan's `monthly_quota` field in the `Plans` table. If `monthly_quota` is not set for a free plan, it falls back to the `FREE_TIER_QUOTA` environment variable (default: 100)
+- **Quota Source:** Quota is read from the plan's `monthly_quota` field in the `Plans` table. If `monthly_quota` is not set for a free plan, it falls back to the `FREE_TIER_QUOTA` environment variable (default: 50)
 
 ### Paid Plan
 
-- **Upgrade Required:** Users must upgrade to paid plan after reaching 100 PDFs
+- **Upgrade Required:** Users must upgrade to paid plan after reaching 50 PDFs
 - **PDF Limit:** Unlimited PDFs (no quota limit)
 - **Free Credits:** Plans may include `free_credits` (e.g., 100 free PDFs). Free credits are consumed first before `price_per_pdf` billing starts.
 - **Price:** $0.01 per PDF (charged only after free credits are exhausted)
@@ -1132,7 +1132,7 @@ The following endpoints will be needed for API key management (to be implemented
    - Single record per user tracks PDF count and plan in `Users` table
    - Free tier: Tracks all-time count (stops at plan's `monthly_quota` limit, requires upgrade)
    - Quota limit is read from `plan.monthly_quota` in `Plans` table (configurable per plan)
-   - If `plan.monthly_quota` is not set, falls back to `FREE_TIER_QUOTA` environment variable (default: 100)
+   - If `plan.monthly_quota` is not set, falls back to `FREE_TIER_QUOTA` environment variable (default: 50)
    - Paid plan: Tracks all-time count in `Users` table (unlimited)
    - Monthly billing tracked separately in `Bills` table (one record per user per month)
    - Counter increments with each successful PDF generation (both quick and long jobs)
@@ -1161,7 +1161,7 @@ The following endpoints will be needed for API key management (to be implemented
 
 ### Pricing Strategy
 
-- **Free Tier:** 100 PDFs (all-time, generous onboarding, then must upgrade)
+- **Free Tier:** 50 PDFs (all-time, generous onboarding, then must upgrade)
 - **Paid Plan:** $0.01 per PDF, unlimited PDFs, monthly invoicing
 - **Expected Gross Margin:** 80–95% at published pricing
 

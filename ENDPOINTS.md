@@ -193,7 +193,7 @@ const response = await fetch('/quickjob', {
 5. **Business Logic**
    - Free tier:
      - Per-user rate limit: 20 req/min (**403** `RATE_LIMIT_EXCEEDED` on breach).
-     - All-time quota: Configurable per plan via `monthly_quota` in `Plans` table (default: 100 PDFs from `FREE_TIER_QUOTA` environment variable) (**403** `QUOTA_EXCEEDED` after that; must upgrade).
+     - All-time quota: Configurable per plan via `monthly_quota` in `Plans` table (default: 50 PDFs from `FREE_TIER_QUOTA` environment variable) (**403** `QUOTA_EXCEEDED` after that; must upgrade).
    - Paid plan:
      - No quota; still subject to API Gateway throttling.
    - **Page Limit (HTML/Markdown):** Maximum page limit is enforced per environment (e.g., 2 pages in dev, 100 pages in prod). If the generated PDF exceeds this limit, the request is rejected with **400** `PAGE_LIMIT_EXCEEDED` error. No truncation is performed.
@@ -840,10 +840,10 @@ Get plan details. Use `GET /plans` to list all active plans, or `GET /plans/{pla
       "plan_id": "free-basic",
       "name": "Free Basic",
       "type": "free",
-      "monthly_quota": 100,
+      "monthly_quota": 50,
       "price_per_pdf": 0,
       "rate_limit_per_minute": 20,
-      "description": "Free tier with 100 PDFs all-time quota (not monthly - cumulative, does not reset). Rate limit: 20 requests per minute.",
+      "description": "Free tier with 50 PDFs all-time quota (not monthly - cumulative, does not reset). Rate limit: 20 requests per minute.",
       "is_active": true
     },
     {
@@ -883,10 +883,10 @@ Get plan details. Use `GET /plans` to list all active plans, or `GET /plans/{pla
     "plan_id": "free-basic",
     "name": "Free Basic",
     "type": "free",
-    "monthly_quota": 100,
+    "monthly_quota": 50,
     "price_per_pdf": 0,
     "rate_limit_per_minute": 20,
-    "description": "Free tier with 100 PDFs all-time quota (not monthly - cumulative, does not reset). Rate limit: 20 requests per minute.",
+    "description": "Free tier with 50 PDFs all-time quota (not monthly - cumulative, does not reset). Rate limit: 20 requests per minute.",
     "is_active": true
   }
 }
@@ -939,10 +939,10 @@ curl -X GET https://api.podpdf.com/plans/free-basic
       "plan_id": "free-basic",
       "name": "Free Basic",
       "type": "free",
-      "monthly_quota": 100,
+      "monthly_quota": 50,
       "price_per_pdf": 0,
       "rate_limit_per_minute": 20,
-      "description": "Free tier with 100 PDFs all-time quota (not monthly - cumulative, does not reset). Rate limit: 20 requests per minute.",
+      "description": "Free tier with 50 PDFs all-time quota (not monthly - cumulative, does not reset). Rate limit: 20 requests per minute.",
       "is_active": true
     },
     {
@@ -1044,7 +1044,7 @@ Authorization: Bearer <jwt_token>
     "plan_id": "free-basic",
     "name": "Free Basic",
     "type": "free",
-    "monthly_quota": 100,
+    "monthly_quota": 50,
     "price_per_pdf": 0,
     "rate_limit_per_minute": 20
   }
