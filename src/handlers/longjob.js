@@ -24,6 +24,7 @@ const { BadRequest, Forbidden, InternalServerError } = require('../utils/errors'
 
 const sqsClient = new SQSClient({ region: process.env.AWS_REGION || 'eu-central-1' });
 const QUEUE_URL = process.env.LONGJOB_QUEUE_URL;
+const MAX_LONGJOB_PAGES = parseInt(process.env.MAX_LONGJOB_PAGES || process.env.MAX_PAGES || '100', 10);
 
 /**
  * POST /longjob - Queue job for asynchronous processing
@@ -161,7 +162,7 @@ async function handler(event) {
     // This ensures we return the error immediately instead of queuing and failing later
     let pdfResult;
     try {
-      pdfResult = await generatePDF(content, inputType, options || {});
+      pdfResult = await generatePDF(content, inputType, options || {}, MAX_LONGJOB_PAGES);
     } catch (error) {
       // Check for page limit exceeded error
       if (error.message && error.message.startsWith('PAGE_LIMIT_EXCEEDED:')) {

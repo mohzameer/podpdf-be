@@ -134,9 +134,10 @@ async function truncatePdf(pdfBuffer, maxPages) {
  * @param {string} content - HTML or Markdown content
  * @param {string} inputType - 'html' or 'markdown'
  * @param {object} options - Puppeteer PDF options
+ * @param {number} maxPages - Maximum number of pages allowed (optional, defaults to MAX_PAGES)
  * @returns {Promise<{pdf: Buffer, pages: number, truncated: boolean}>}
  */
-async function generatePDF(content, inputType, options = {}) {
+async function generatePDF(content, inputType, options = {}, maxPages = null) {
   let browser = null;
   let startTime = Date.now();
 
@@ -211,15 +212,16 @@ ${htmlContent}
     let pageCount = countPages(pdfBuffer);
 
     // Check if page count exceeds limit - reject instead of truncating
-    // Allow MAX_PAGES + 1 to account for page division being slightly underestimated
-    const effectiveMaxPages = MAX_PAGES + 1;
+    // Use provided maxPages or fall back to global MAX_PAGES
+    const effectiveMaxPages = (maxPages !== null ? maxPages : MAX_PAGES) + 1;
+    const limitMaxPages = maxPages !== null ? maxPages : MAX_PAGES;
     if (pageCount > effectiveMaxPages) {
       logger.warn('PDF exceeds page limit', {
         pageCount,
-        maxPages: MAX_PAGES,
+        maxPages: limitMaxPages,
         effectiveMaxPages,
       });
-      throw new Error(`PAGE_LIMIT_EXCEEDED:${pageCount}:${MAX_PAGES}`);
+      throw new Error(`PAGE_LIMIT_EXCEEDED:${pageCount}:${limitMaxPages}`);
     }
 
     const duration = Date.now() - startTime;

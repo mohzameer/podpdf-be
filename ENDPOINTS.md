@@ -2487,3 +2487,125 @@ When a long job completes, a POST request is sent to the configured webhook URL 
 **Webhook Response:**
 - Webhook endpoint should return `200 OK` to confirm receipt
 - Any other status code will trigger retries
+
+---
+
+## 14. `POST /webhook/job-done`
+
+**Description:**  
+Internal webhook receiver endpoint that receives job completion notifications from api.podpdf.com. This endpoint validates webhook payloads and processes job completion events. Designed for use by PodPDF's own internal services.
+
+### 14.1 Authentication
+
+- **Type:** None (public endpoint with payload validation)
+- **Security:** Payload structure validation and job verification prevent abuse
+- **Note:** This endpoint is intended for internal use by PodPDF services. External users should configure their own webhook URLs via `PUT /accounts/me/webhook`.
+
+### 14.2 HTTP Request
+
+**Method:** `POST`  
+**Path:** `/webhook/job-done`  
+**Content-Type:** `application/json`
+
+#### 14.2.1 Request Body
+
+The webhook payload sent from api.podpdf.com when a job completes:
+
+```json
+{
+  "job_id": "9f0a4b78-2c0c-4d14-9b8b-123456789abc",
+  "status": "completed",
+  "s3_url": "https://s3.amazonaws.com/podpdf-dev-pdfs/9f0a4b78-2c0c-4d14-9b8b-123456789abc.pdf?X-Amz-Signature=...",
+  "s3_url_expires_at": "2025-12-21T11:32:15Z",
+  "pages": 150,
+  "mode": "html",
+  "truncated": false,
+  "created_at": "2025-12-21T10:30:00Z",
+  "completed_at": "2025-12-21T10:32:15Z"
+}
+```
+
+**Required Fields:**
+- `job_id` (string, required): UUID of the completed job
+- `status` (string, required): Job status - must be one of: `queued`, `processing`, `completed`, `failed`, `timeout`
+
+**Optional Fields:**
+- `pages` (integer, optional): Number of pages in the generated PDF
+- `mode` (string, optional): Input mode - one of: `html`, `markdown`, `image`
+- `truncated` (boolean, optional): Whether the PDF was truncated due to page limit
+- `s3_url` (string, optional): Signed S3 URL for downloading the PDF (for long jobs)
+- `s3_url_expires_at` (string, optional): ISO 8601 timestamp when the S3 URL expires
+- `created_at` (string, optional): ISO 8601 timestamp when the job was created
+- `completed_at` (string, optional): ISO 8601 timestamp when the job completed
+- `error_message` (string, optional): Error message if job failed
+
+### 14.3 Validation
+
+The endpoint performs comprehensive validation to prevent abuse:
+
+1. **Structure Validation:**
+   - Request body must be valid JSON object
+   - Required fields must be present
+   - Field types must match expected types
+
+2. **Format Validation:**
+   - `job_id` must be a valid UUID format
+   - `status` must be one of the valid status values
+   - Timestamps must be in ISO 8601 format
+   - URLs must be valid URL format
+   - Numbers must be valid integers
+
+3. **Size Validation:**
+   - Payload size limited to 100KB maximum
+
+4. **Job Verification:**
+   - Job must exist in the system
+   - Job status must match the webhook payload status (prevents replay attacks)
+
+### 14.4 Response
+
+#### 14.4.1 Success Response
+
+- **Status:** `200 OK`
+- **Content-Type:** `application/json`
+- **Body:**
+
+```json
+{
+  "message": "Webhook received successfully",
+  "job_id": "9f0a4b78-2c0c-4d14-9b8b-123456789abc",
+  "status": "completed"
+}
+```
+
+#### 14.4.2 Error Responses
+
+- `400 Bad Request` – Invalid payload structure, missing required fields, invalid field types, or payload size exceeds limit
+  - Error code: `INVALID_PARAMETER`
+  - Details include specific validation failure reason
+
+- `404 Not Found` – Job not found in system
+  - Error code: `JOB_NOT_FOUND`
+
+- `400 Bad Request` – Status mismatch (webhook status doesn't match actual job status)
+  - Error code: `INVALID_PARAMETER`
+  - Prevents replay attacks with outdated statuses
+
+- `500 Internal Server Error` – Server-side processing error
+  - Error code: `INTERNAL_SERVER_ERROR`
+
+### 14.5 Security Features
+
+- **Payload Structure Validation:** Validates all fields before processing
+- **Job Existence Verification:** Ensures job exists before processing
+- **Status Mismatch Detection:** Prevents replay attacks by verifying status matches
+- **Size Limits:** Prevents abuse with oversized payloads (100KB max)
+- **Comprehensive Logging:** All requests logged with source IP for monitoring
+
+### 14.6 Usage Notes
+
+- This endpoint is designed for internal PodPDF services
+- External users should configure their own webhook URLs via `PUT /accounts/me/webhook`
+- The endpoint validates all webhook payloads before processing
+- Failed validations return appropriate error codes without processing
+- All webhook receipts are logged for monitoring and debugging

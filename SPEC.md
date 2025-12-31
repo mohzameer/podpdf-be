@@ -488,7 +488,7 @@ Client → API Gateway → Lambda (longjob) → SQS Queue
      - Logs webhook retry count in Analytics table
      - If all retries fail, marks job as completed but logs webhook failure
 
-6. **Webhook Payload**
+6. **Webhook Delivery:**
    - POST request to user's webhook URL with:
    ```json
    {
@@ -503,6 +503,13 @@ Client → API Gateway → Lambda (longjob) → SQS Queue
      "completed_at": "2025-12-21T10:32:15Z"
    }
    ```
+
+7. **Internal Webhook Receiver:**
+   - `POST /webhook/job-done` - Internal endpoint for receiving webhook notifications
+   - Validates webhook payload structure before processing
+   - Verifies job existence and status to prevent abuse
+   - Designed for PodPDF's own internal services
+   - See API Specification section for details
 
 ---
 
@@ -714,6 +721,81 @@ Client → API Gateway → Lambda (longjob) → SQS Queue
 - Public endpoint - no authentication required
 - List endpoint only returns active plans (`is_active: true`)
 - Plans are sorted by type (free first) then alphabetically by name
+
+### 6. POST /webhook/job-done
+
+**Description:** Internal webhook receiver endpoint that receives job completion notifications from api.podpdf.com. This endpoint validates webhook payloads and processes job completion events. Designed for use by PodPDF's own internal services.
+
+**Authentication:** None (public endpoint with payload validation)
+
+**Request Body:**
+```json
+{
+  "job_id": "9f0a4b78-2c0c-4d14-9b8b-123456789abc",
+  "status": "completed",
+  "s3_url": "https://s3.amazonaws.com/podpdf-dev-pdfs/9f0a4b78-2c0c-4d14-9b8b-123456789abc.pdf?X-Amz-Signature=...",
+  "s3_url_expires_at": "2025-12-21T11:32:15Z",
+  "pages": 150,
+  "mode": "html",
+  "truncated": false,
+  "created_at": "2025-12-21T10:30:00Z",
+  "completed_at": "2025-12-21T10:32:15Z"
+}
+```
+
+**Required Fields:**
+- `job_id` (string): UUID of the completed job
+- `status` (string): Job status - must be one of: `queued`, `processing`, `completed`, `failed`, `timeout`
+
+**Optional Fields:**
+- `pages` (integer): Number of pages in the generated PDF
+- `mode` (string): Input mode - one of: `html`, `markdown`, `image`
+- `truncated` (boolean): Whether the PDF was truncated due to page limit
+- `s3_url` (string): Signed S3 URL for downloading the PDF (for long jobs)
+- `s3_url_expires_at` (string): ISO 8601 timestamp when the S3 URL expires
+- `created_at` (string): ISO 8601 timestamp when the job was created
+- `completed_at` (string): ISO 8601 timestamp when the job completed
+- `error_message` (string): Error message if job failed
+
+**Response (Success - 200 OK):**
+```json
+{
+  "message": "Webhook received successfully",
+  "job_id": "9f0a4b78-2c0c-4d14-9b8b-123456789abc",
+  "status": "completed"
+}
+```
+
+**Response (Error - 400 Bad Request):**
+- Invalid payload structure, missing required fields, invalid field types, or payload size exceeds 100KB limit
+- Status mismatch (webhook status doesn't match actual job status)
+
+**Response (Error - 404 Not Found):**
+- Job not found in system
+
+**Validation:**
+- **Structure Validation:** Request body must be valid JSON object with required fields
+- **Format Validation:** 
+  - `job_id` must be valid UUID format
+  - `status` must be one of valid status values
+  - Timestamps must be ISO 8601 format
+  - URLs must be valid URL format
+- **Size Validation:** Payload size limited to 100KB maximum
+- **Job Verification:** 
+  - Job must exist in system
+  - Job status must match webhook payload status (prevents replay attacks)
+
+**Security Features:**
+- Payload structure validation before processing
+- Job existence verification
+- Status mismatch detection to prevent replay attacks
+- Size limits to prevent abuse
+- Comprehensive logging with source IP
+
+**Notes:**
+- This endpoint is designed for internal PodPDF services
+- External users should configure their own webhook URLs via `PUT /accounts/me/webhook`
+- All webhook receipts are logged for monitoring and debugging
 
 ### Authentication Methods
 

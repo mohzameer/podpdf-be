@@ -19,6 +19,7 @@ const { InternalServerError } = require('../utils/errors');
 
 const MAX_WEBHOOK_RETRIES = 3;
 const WEBHOOK_RETRY_DELAYS = [1000, 2000, 4000]; // 1s, 2s, 4s
+const MAX_LONGJOB_PAGES = parseInt(process.env.MAX_LONGJOB_PAGES || process.env.MAX_PAGES || '100', 10);
 
 /**
  * Call webhook with job details
@@ -192,7 +193,7 @@ async function processMessage(record) {
     // Generate PDF
     let pdfResult;
     try {
-      pdfResult = await generatePDF(content, input_type, options || {});
+      pdfResult = await generatePDF(content, input_type, options || {}, MAX_LONGJOB_PAGES);
     } catch (error) {
       // Check for page limit exceeded error
       if (error.message && error.message.startsWith('PAGE_LIMIT_EXCEEDED:')) {

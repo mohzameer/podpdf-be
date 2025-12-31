@@ -33,7 +33,7 @@ try {
 }
 
 const QUICKJOB_TIMEOUT_SECONDS = parseInt(process.env.QUICKJOB_TIMEOUT_SECONDS || '30', 10);
-const MAX_PAGES = parseInt(process.env.MAX_PAGES || '100', 10);
+const MAX_PAGES = parseInt(process.env.MAX_QUICKJOB_PAGES || process.env.MAX_PAGES || '100', 10);
 
 /**
  * POST /quickjob - Generate PDF synchronously
@@ -308,7 +308,7 @@ async function handler(event) {
       } else {
         // Generate PDF from HTML/Markdown
         pdfResult = await Promise.race([
-          generatePDF(content, inputType, options),
+          generatePDF(content, inputType, options, MAX_PAGES),
           timeoutPromise,
         ]);
       }

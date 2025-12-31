@@ -22,6 +22,8 @@ provider:
     FREE_TIER_QUOTA: 100
     RATE_LIMIT_PER_MINUTE: 20
     MAX_PAGES: ${self:custom.stages.${self:provider.stage}.maxPages}
+    MAX_QUICKJOB_PAGES: ${self:custom.stages.${self:provider.stage}.maxQuickJobPages}
+    MAX_LONGJOB_PAGES: ${self:custom.stages.${self:provider.stage}.maxLongJobPages}
     MAX_INPUT_SIZE_MB: 5
     QUICKJOB_TIMEOUT_SECONDS: 30
     MAX_IMAGES: 100
@@ -229,6 +231,14 @@ functions:
           method: put
           authorizer: cognitoAuthorizer
   
+  webhook-receiver:
+    handler: src/handlers/webhook-receiver.handler
+    events:
+      - httpApi:
+          path: /webhook/job-done
+          method: post
+          authorizer: null  # No authorizer - uses payload validation for security
+  
   health:
     handler: src/handlers/health.handler
     events:
@@ -274,6 +284,8 @@ custom:
     dev:
       logLevel: debug
       maxPages: 2
+      maxQuickJobPages: 2
+      maxLongJobPages: 4
       signupEvents:
         - httpApi:
             path: /signup
@@ -300,6 +312,8 @@ custom:
     prod:
       logLevel: info
       maxPages: 100
+      maxQuickJobPages: 25
+      maxLongJobPages: 100
       signupEvents:
         - httpApi:
             path: /signup
