@@ -217,6 +217,7 @@ Client → API Gateway → Lambda (longjob) → SQS Queue
      - `free_credits` (Number, optional) - Number of free PDF credits included with the plan (e.g., `100`). These credits are used before `price_per_pdf` billing starts. Defaults to `0` if not set.
      - `price_per_pdf` (Number) - Price per PDF (e.g., `0` for free, `0.01` for paid)
      - `rate_limit_per_minute` (Number, optional) - Per-user rate limit (e.g., `20` for free, `null` or higher value for paid)
+     - `enabled_conversion_types` (Array of Strings, optional) - List of conversion types enabled for this plan. Valid values: `"html"`, `"markdown"`, `"image"`. If not specified, `null`, or empty array, all conversion types are enabled (backward compatible).
      - `description` (String, optional) - Description of the plan
      - `is_active` (Boolean) - Indicates if plan is active and available for assignment
    - **TTL:** Not applicable (plan configurations are long-lived)

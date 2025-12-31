@@ -377,6 +377,48 @@ async function incrementPdfCount(userSub, userId, plan = null) {
 }
 
 /**
+ * Check if conversion type is enabled for the plan
+ * @param {object} plan - Plan configuration
+ * @param {string} inputType - Requested input type ('html', 'markdown', 'image')
+ * @returns {Promise<{allowed: boolean, error: object|null}>}
+ */
+async function checkConversionType(plan, inputType) {
+  try {
+    // If plan doesn't have enabled_conversion_types, allow all (backward compatible)
+    if (!plan.enabled_conversion_types || 
+        plan.enabled_conversion_types === null || 
+        (Array.isArray(plan.enabled_conversion_types) && plan.enabled_conversion_types.length === 0)) {
+      return { allowed: true, error: null };
+    }
+
+    // Normalize input type to lowercase
+    const normalizedInputType = inputType.toLowerCase();
+
+    // Check if input type is in enabled list
+    const enabledTypes = plan.enabled_conversion_types.map(t => t.toLowerCase());
+    if (enabledTypes.includes(normalizedInputType)) {
+      return { allowed: true, error: null };
+    }
+
+    // Conversion type not enabled
+    return {
+      allowed: false,
+      error: Forbidden.CONVERSION_TYPE_NOT_ENABLED(
+        normalizedInputType,
+        enabledTypes
+      ),
+    };
+  } catch (error) {
+    logger.error('Conversion type check error', {
+      error: error.message,
+      inputType,
+    });
+    // On error, allow the request (fail open)
+    return { allowed: true, error: null };
+  }
+}
+
+/**
  * Validate user account and enforce business rules
  * @param {string} userSub - Cognito user sub
  * @returns {Promise<{user: object, plan: object, error: object|null}>}
@@ -435,6 +477,7 @@ module.exports = {
   getPlan,
   checkRateLimit,
   checkQuota,
+  checkConversionType,
   incrementPdfCount,
   validateUserAndPlan,
 };

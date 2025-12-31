@@ -191,6 +191,7 @@ const response = await fetch('/quickjob', {
    - Image count must not exceed page limit per environment (e.g., 2 images in dev, 100 images in prod). Each image = 1 page. If exceeded, request is rejected with `400 PAGE_LIMIT_EXCEEDED` error before conversion.
 
 5. **Business Logic**
+   - **Conversion Type Validation:** The requested `input_type` must be enabled for the user's plan. If the plan has `enabled_conversion_types` configured and the requested type is not in the list, the request is rejected with **403** `CONVERSION_TYPE_NOT_ENABLED` error. If the plan does not have `enabled_conversion_types` configured (or it's `null` or empty), all conversion types are allowed (backward compatible).
    - Free tier:
      - Per-user rate limit: 20 req/min (**403** `RATE_LIMIT_EXCEEDED` on breach).
      - All-time quota: Configurable per plan via `monthly_quota` in `Plans` table (default: 50 PDFs from `FREE_TIER_QUOTA` environment variable) (**403** `QUOTA_EXCEEDED` after that; must upgrade).
@@ -268,6 +269,7 @@ Common error statuses:
 
 - `403 Forbidden`
   - Account not found (`ACCOUNT_NOT_FOUND`)
+  - Conversion type not enabled for plan (`CONVERSION_TYPE_NOT_ENABLED`)
   - Per-user rate limit exceeded for free tier (`RATE_LIMIT_EXCEEDED`)
   - Free tier quota exhausted (`QUOTA_EXCEEDED`)
 
@@ -390,6 +392,7 @@ Authorization: Bearer <api_key>
 
 Same validation as `/quickjob` (authentication, account, body, business logic), plus:
 
+- **Conversion Type Validation:** The requested `input_type` must be enabled for the user's plan. If the plan has `enabled_conversion_types` configured and the requested type is not in the list, the request is rejected with **403** `CONVERSION_TYPE_NOT_ENABLED` error. Note: Image conversion type is not supported in `/longjob` (returns `400 Bad Request` before conversion type validation).
 - **Page Limit Check:** The PDF is generated synchronously before queuing to validate the page count. If the page limit is exceeded, the request is rejected immediately with `400 Bad Request` (`PAGE_LIMIT_EXCEEDED`). The job is only queued if the page limit check passes.
 - `webhook_url` (if provided) must be a valid HTTPS URL.
 
@@ -421,6 +424,7 @@ Same validation as `/quickjob` (authentication, account, body, business logic), 
 Same error responses as `/quickjob` (400, 401, 403, 429, 500), plus:
 - `400 Bad Request` – Invalid `webhook_url` (not HTTPS or malformed URL).
 - `400 Bad Request` – PDF page count exceeds maximum allowed pages (`PAGE_LIMIT_EXCEEDED`). **This error is returned immediately before queuing the job.** No job record is created and no webhook will be sent.
+- `403 Forbidden` – Conversion type not enabled for plan (`CONVERSION_TYPE_NOT_ENABLED`). **This error is returned before queuing the job.** No job record is created and no webhook will be sent.
 
 **Note:** The page limit is checked synchronously before queuing. If the limit is exceeded, the error is returned immediately in the initial response. If the check passes, the job is queued and processing happens asynchronously. Use `GET /jobs/{job_id}` to check status, or wait for webhook notification.
 
@@ -843,6 +847,7 @@ Get plan details. Use `GET /plans` to list all active plans, or `GET /plans/{pla
       "monthly_quota": 50,
       "price_per_pdf": 0,
       "rate_limit_per_minute": 20,
+      "enabled_conversion_types": ["html"],
       "description": "Free tier with 50 PDFs all-time quota (not monthly - cumulative, does not reset). Rate limit: 20 requests per minute.",
       "is_active": true
     },
@@ -853,6 +858,7 @@ Get plan details. Use `GET /plans` to list all active plans, or `GET /plans/{pla
       "monthly_quota": null,
       "price_per_pdf": 0.01,
       "rate_limit_per_minute": null,
+      "enabled_conversion_types": ["html", "markdown"],
       "description": "Paid plan with unlimited PDFs. Price: $0.01 per PDF. Unlimited rate limit.",
       "is_active": true
     }
@@ -872,6 +878,7 @@ Get plan details. Use `GET /plans` to list all active plans, or `GET /plans/{pla
 - `monthly_quota` (number|null) - Number of PDFs included per month for free plans, `null` for unlimited paid plans
 - `price_per_pdf` (number) - Price per PDF in USD (0 for free plans)
 - `rate_limit_per_minute` (number|null) - Per-user rate limit in requests per minute, `null` for unlimited
+- `enabled_conversion_types` (array|null) - List of conversion types enabled for this plan. Valid values: `"html"`, `"markdown"`, `"image"`. If `null` or not specified, all conversion types are enabled (backward compatible).
 - `description` (string|null) - Plan description
 - `is_active` (boolean) - Whether the plan is active and available
 
@@ -942,6 +949,7 @@ curl -X GET https://api.podpdf.com/plans/free-basic
       "monthly_quota": 50,
       "price_per_pdf": 0,
       "rate_limit_per_minute": 20,
+      "enabled_conversion_types": ["html"],
       "description": "Free tier with 50 PDFs all-time quota (not monthly - cumulative, does not reset). Rate limit: 20 requests per minute.",
       "is_active": true
     },
@@ -952,6 +960,7 @@ curl -X GET https://api.podpdf.com/plans/free-basic
       "monthly_quota": null,
       "price_per_pdf": 0.01,
       "rate_limit_per_minute": null,
+      "enabled_conversion_types": ["html", "markdown"],
       "description": "Paid plan with unlimited PDFs. Price: $0.01 per PDF. Unlimited rate limit.",
       "is_active": true
     }

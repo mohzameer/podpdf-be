@@ -72,6 +72,7 @@ async function getPlanDetails(event, planId) {
       monthly_quota: plan.monthly_quota ?? null,
       price_per_pdf: plan.price_per_pdf ?? 0,
       rate_limit_per_minute: plan.rate_limit_per_minute ?? null,
+      enabled_conversion_types: plan.enabled_conversion_types ?? null,
       description: plan.description ?? null,
       is_active: plan.is_active ?? true,
     };
@@ -110,6 +111,7 @@ async function listPlans(event) {
         monthly_quota: plan.monthly_quota ?? null,
         price_per_pdf: plan.price_per_pdf ?? 0,
         rate_limit_per_minute: plan.rate_limit_per_minute ?? null,
+        enabled_conversion_types: plan.enabled_conversion_types ?? null,
         description: plan.description ?? null,
         is_active: plan.is_active ?? true,
       }))

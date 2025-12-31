@@ -243,6 +243,17 @@ const Forbidden = {
       }
     ),
 
+  CONVERSION_TYPE_NOT_ENABLED: (requestedType, enabledTypes) =>
+    createErrorResponse(
+      403,
+      'CONVERSION_TYPE_NOT_ENABLED',
+      `Conversion type '${requestedType}' is not enabled for your plan. Enabled types: ${enabledTypes.join(', ')}`,
+      {
+        enabled_types: enabledTypes,
+        requested_type: requestedType,
+      }
+    ),
+
   ACCOUNT_ALREADY_EXISTS: () =>
     createErrorResponse(
       409,

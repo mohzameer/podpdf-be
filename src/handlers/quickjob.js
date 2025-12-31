@@ -12,6 +12,7 @@ const {
   validateUserAndPlan,
   checkRateLimit,
   checkQuota,
+  checkConversionType,
   incrementPdfCount,
 } = require('../services/business');
 const {
@@ -216,6 +217,12 @@ async function handler(event) {
     }
     
     userSub = userInfo.userSub || user.user_sub;
+
+    // Check conversion type (after plan retrieval, before rate limit/quota checks)
+    const conversionTypeCheck = await checkConversionType(plan, inputType);
+    if (!conversionTypeCheck.allowed) {
+      return conversionTypeCheck.error;
+    }
 
     // Check rate limit
     const rateLimitCheck = await checkRateLimit(userId, plan);
