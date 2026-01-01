@@ -4,7 +4,6 @@
  * Processes queued jobs, generates PDF, uploads to S3, calls webhook
  */
 
-const https = require('https');
 const logger = require('../utils/logger');
 const {
   atomicallyStartProcessing,
@@ -15,134 +14,41 @@ const {
 const { generatePDF } = require('../services/pdf');
 const { uploadPDF, generateSignedUrl, getExpirationTimestamp } = require('../services/s3');
 const { incrementPdfCount, getUserAccount, getPlan } = require('../services/business');
+const { deliverWebhooksForEvent } = require('../services/webhookDelivery');
 const { InternalServerError } = require('../utils/errors');
 
-const MAX_WEBHOOK_RETRIES = 3;
-const WEBHOOK_RETRY_DELAYS = [1000, 2000, 4000]; // 1s, 2s, 4s
 const MAX_LONGJOB_PAGES = parseInt(process.env.MAX_LONGJOB_PAGES || process.env.MAX_PAGES || '100', 10);
 
 /**
- * Call webhook with job details
- * @param {string} webhookUrl - Webhook URL
- * @param {object} payload - Webhook payload
- * @returns {Promise<{success: boolean, statusCode: number, error: string|null}>}
+ * Trigger webhook for job.processing event
+ * @param {string} userId - User ID
+ * @param {string} jobId - Job ID
+ * @param {object} job - Job record
+ * @returns {Promise<{delivered: array, failed: array}>}
  */
-async function callWebhook(webhookUrl, payload) {
-  return new Promise((resolve) => {
-    try {
-      const url = new URL(webhookUrl);
-      const postData = JSON.stringify(payload);
-
-      const options = {
-        hostname: url.hostname,
-        port: url.port || 443,
-        path: url.pathname + url.search,
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(postData),
-        },
-        timeout: 10000, // 10 second timeout
-      };
-
-      const req = https.request(options, (res) => {
-        let responseData = '';
-
-        res.on('data', (chunk) => {
-          responseData += chunk;
-        });
-
-        res.on('end', () => {
-          if (res.statusCode >= 200 && res.statusCode < 300) {
-            resolve({
-              success: true,
-              statusCode: res.statusCode,
-              error: null,
-            });
-          } else {
-            resolve({
-              success: false,
-              statusCode: res.statusCode,
-              error: `HTTP ${res.statusCode}`,
-            });
-          }
-        });
-      });
-
-      req.on('error', (error) => {
-        resolve({
-          success: false,
-          statusCode: 0,
-          error: error.message,
-        });
-      });
-
-      req.on('timeout', () => {
-        req.destroy();
-        resolve({
-          success: false,
-          statusCode: 0,
-          error: 'Request timeout',
-        });
-      });
-
-      req.write(postData);
-      req.end();
-    } catch (error) {
-      resolve({
-        success: false,
-        statusCode: 0,
-        error: error.message,
-      });
-    }
-  });
-}
-
-/**
- * Deliver webhook with retry logic
- * @param {string} webhookUrl - Webhook URL
- * @param {object} payload - Webhook payload
- * @returns {Promise<{delivered: boolean, retryCount: number, retryLog: array}>}
- */
-async function deliverWebhook(webhookUrl, payload) {
-  const retryLog = [];
-  let retryCount = 0;
-
-  for (let attempt = 0; attempt <= MAX_WEBHOOK_RETRIES; attempt++) {
-    const attemptStartTime = Date.now();
-    const result = await callWebhook(webhookUrl, payload);
-    const attemptDuration = Date.now() - attemptStartTime;
-
-    retryLog.push({
-      attempt: attempt + 1,
+async function triggerProcessingWebhook(userId, jobId, job) {
+  try {
+    const payload = {
+      event: 'job.processing',
+      job_id: jobId,
+      status: 'processing',
+      job_type: 'long',
+      mode: job.mode || job.input_type,
+      created_at: job.created_at,
+      started_at: new Date().toISOString(),
       timestamp: new Date().toISOString(),
-      success: result.success,
-      statusCode: result.statusCode,
-      error: result.error,
-      duration_ms: attemptDuration,
+    };
+
+    const result = await deliverWebhooksForEvent(userId, 'job.processing', payload, jobId);
+    return result;
+  } catch (error) {
+    logger.error('Error triggering processing webhook', {
+      error: error.message,
+      jobId,
+      userId,
     });
-
-    if (result.success) {
-      return {
-        delivered: true,
-        retryCount: attempt,
-        retryLog,
-      };
-    }
-
-    // If not the last attempt, wait before retrying
-    if (attempt < MAX_WEBHOOK_RETRIES) {
-      retryCount = attempt + 1;
-      const delay = WEBHOOK_RETRY_DELAYS[attempt];
-      await new Promise((resolve) => setTimeout(resolve, delay));
-    }
+    return { delivered: [], failed: [] };
   }
-
-  return {
-    delivered: false,
-    retryCount: MAX_WEBHOOK_RETRIES,
-    retryLog,
-  };
 }
 
 /**
@@ -187,6 +93,23 @@ async function processMessage(record) {
       return;
     }
 
+    // Trigger job.processing webhook
+    try {
+      const processingWebhooks = await triggerProcessingWebhook(userId, jobId, job);
+      if (processingWebhooks.delivered.length > 0) {
+        logger.info('Processing webhooks delivered', {
+          jobId,
+          count: processingWebhooks.delivered.length,
+        });
+      }
+    } catch (error) {
+      logger.warn('Error delivering processing webhooks', {
+        error: error.message,
+        jobId,
+      });
+      // Continue processing even if webhook fails
+    }
+
     // Extract job details from message
     const { input_type, content, options, webhook_url } = messageBody;
 
@@ -211,14 +134,35 @@ async function processMessage(record) {
           jobDuration: Date.now() - startTime,
         });
 
-        // Deliver webhook with error if configured
-        if (webhook_url) {
-          await deliverWebhook(webhook_url, {
+        // Deliver job.failed webhook
+        try {
+          const payload = {
+            event: 'job.failed',
             job_id: jobId,
             status: 'failed',
+            job_type: 'long',
+            mode: input_type,
             error_message: `PDF page count (${pageCount}) exceeds maximum allowed pages (${maxPages})`,
             created_at: job.created_at,
             failed_at: new Date().toISOString(),
+            timestamp: new Date().toISOString(),
+          };
+
+          const webhookResult = await deliverWebhooksForEvent(userId, 'job.failed', payload, jobId);
+          
+          // Update job record with webhook_ids
+          const webhookIds = webhookResult.delivered.map(w => w.webhook_id);
+          if (webhookIds.length > 0) {
+            await updateJobRecord(jobId, {
+              webhook_ids: webhookIds,
+              webhook_delivered: webhookResult.delivered.length > 0,
+              webhook_delivered_at: webhookResult.delivered.length > 0 ? new Date().toISOString() : null,
+            });
+          }
+        } catch (error) {
+          logger.warn('Error delivering failed webhooks', {
+            error: error.message,
+            jobId,
           });
         }
 
@@ -274,56 +218,47 @@ async function processMessage(record) {
       jobDuration: Date.now() - startTime,
     });
 
-    // Deliver webhook if configured
-    if (webhook_url) {
-      const webhookPayload = {
+    // Deliver job.completed webhook
+    try {
+      const payload = {
+        event: 'job.completed',
         job_id: jobId,
         status: 'completed',
+        job_type: 'long',
+        mode: input_type,
+        pages,
+        truncated: false,
         s3_url: signedUrl,
         s3_url_expires_at: expiresAt,
-        pages,
-        mode: input_type,
-        truncated: false,
         created_at: job.created_at,
         completed_at: new Date().toISOString(),
+        timestamp: new Date().toISOString(),
       };
 
-      const webhookResult = await deliverWebhook(webhook_url, webhookPayload);
-
-      // Update job record with webhook delivery status
-      await updateJobRecord(jobId, {
-        webhook_delivered: webhookResult.delivered,
-        webhook_delivered_at: webhookResult.delivered
-          ? new Date().toISOString()
-          : null,
-        webhook_retry_count: webhookResult.retryCount,
-        webhook_retry_log: webhookResult.retryLog,
-      });
-
-      // Update analytics with webhook retry count
-      await createAnalyticsRecord({
-        jobId,
-        jobType: 'long',
-        mode: input_type,
-        pages,
-        status: 'success',
-        jobDuration: Date.now() - startTime,
-        webhookRetryCount: webhookResult.retryCount,
-      });
-
-      if (!webhookResult.delivered) {
-        logger.warn('Webhook delivery failed after all retries', {
-          jobId,
-          webhookUrl: webhook_url,
-          retryCount: webhookResult.retryCount,
-        });
-      } else {
-        logger.info('Webhook delivered successfully', {
-          jobId,
-          webhookUrl: webhook_url,
-          retryCount: webhookResult.retryCount,
+      const webhookResult = await deliverWebhooksForEvent(userId, 'job.completed', payload, jobId);
+      
+      // Update job record with webhook_ids and delivery status
+      const webhookIds = webhookResult.delivered.map(w => w.webhook_id);
+      if (webhookIds.length > 0) {
+        await updateJobRecord(jobId, {
+          webhook_ids: webhookIds,
+          webhook_delivered: webhookResult.delivered.length > 0,
+          webhook_delivered_at: webhookResult.delivered.length > 0 ? new Date().toISOString() : null,
         });
       }
+
+      if (webhookResult.delivered.length > 0) {
+        logger.info('Webhooks delivered successfully', {
+          jobId,
+          deliveredCount: webhookResult.delivered.length,
+          failedCount: webhookResult.failed.length,
+        });
+      }
+    } catch (error) {
+      logger.warn('Error delivering completed webhooks', {
+        error: error.message,
+        jobId,
+      });
     }
 
     logger.info('Long job processed successfully', {
@@ -354,6 +289,38 @@ async function processMessage(record) {
           status: 'failure',
           jobDuration: Date.now() - startTime,
         });
+
+        // Deliver job.failed webhook
+        try {
+          const payload = {
+            event: 'job.failed',
+            job_id: jobId,
+            status: 'failed',
+            job_type: 'long',
+            mode: job.mode || job.input_type,
+            error_message: error.message,
+            created_at: job.created_at,
+            failed_at: new Date().toISOString(),
+            timestamp: new Date().toISOString(),
+          };
+
+          const webhookResult = await deliverWebhooksForEvent(userId, 'job.failed', payload, jobId);
+          
+          // Update job record with webhook_ids
+          const webhookIds = webhookResult.delivered.map(w => w.webhook_id);
+          if (webhookIds.length > 0) {
+            await updateJobRecord(jobId, {
+              webhook_ids: webhookIds,
+              webhook_delivered: webhookResult.delivered.length > 0,
+              webhook_delivered_at: webhookResult.delivered.length > 0 ? new Date().toISOString() : null,
+            });
+          }
+        } catch (webhookError) {
+          logger.warn('Error delivering failed webhooks', {
+            error: webhookError.message,
+            jobId,
+          });
+        }
       } catch (updateError) {
         logger.error('Error updating job record on failure', {
           error: updateError.message,

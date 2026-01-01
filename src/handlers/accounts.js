@@ -1,6 +1,8 @@
 /**
  * Accounts handler
- * Handles: POST /accounts, GET /accounts/me, DELETE /accounts/me, PUT /accounts/me/webhook
+ * Handles: POST /accounts, GET /accounts/me, DELETE /accounts/me, PUT /accounts/me/webhook (DEPRECATED)
+ * 
+ * Note: PUT /accounts/me/webhook is deprecated. Use the webhook-manager handler for webhook management.
  */
 
 const logger = require('../utils/logger');
@@ -342,15 +344,29 @@ async function deleteAccount(event) {
 }
 
 /**
- * PUT /accounts/me/webhook - Update webhook URL
+ * PUT /accounts/me/webhook - Update webhook URL (DEPRECATED)
+ * 
+ * @deprecated This endpoint is deprecated. Use the new multiple webhooks system instead:
+ * - POST /accounts/me/webhooks - Create a new webhook
+ * - PUT /accounts/me/webhooks/{webhook_id} - Update a webhook
+ * 
+ * This endpoint will be removed in a future version. Please migrate to the new webhook management API.
  */
 async function updateWebhook(event) {
   try {
+    // Log deprecation warning
+    logger.warn('Deprecated endpoint used: PUT /accounts/me/webhook. Please migrate to the new webhook management API at /accounts/me/webhooks');
+
     const userSub = await extractUserSub(event);
     if (!userSub) {
   return {
         statusCode: 401,
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 
+          'Content-Type': 'application/json',
+          'Deprecation': 'true',
+          'Sunset': 'Mon, 01 Jan 2026 00:00:00 GMT',
+          'Link': '</accounts/me/webhooks>; rel="successor-version"',
+        },
         body: JSON.stringify({
           error: {
             code: 'UNAUTHORIZED',
@@ -362,7 +378,14 @@ async function updateWebhook(event) {
 
     const user = await getUserAccount(userSub);
     if (!user) {
-      return Forbidden.ACCOUNT_NOT_FOUND();
+      const errorResponse = Forbidden.ACCOUNT_NOT_FOUND();
+      errorResponse.headers = {
+        ...errorResponse.headers,
+        'Deprecation': 'true',
+        'Sunset': 'Mon, 01 Jan 2026 00:00:00 GMT',
+        'Link': '</accounts/me/webhooks>; rel="successor-version"',
+      };
+      return errorResponse;
     }
 
     // Parse request body
@@ -370,7 +393,14 @@ async function updateWebhook(event) {
     try {
       body = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
     } catch (error) {
-      return BadRequest.INVALID_WEBHOOK_URL();
+      const errorResponse = BadRequest.INVALID_WEBHOOK_URL();
+      errorResponse.headers = {
+        ...errorResponse.headers,
+        'Deprecation': 'true',
+        'Sunset': 'Mon, 01 Jan 2026 00:00:00 GMT',
+        'Link': '</accounts/me/webhooks>; rel="successor-version"',
+      };
+      return errorResponse;
     }
 
     const { webhook_url } = body;
@@ -379,7 +409,14 @@ async function updateWebhook(event) {
     if (webhook_url) {
       const validation = validateWebhookUrl(webhook_url);
       if (!validation.isValid) {
-        return validation.error;
+        const errorResponse = validation.error;
+        errorResponse.headers = {
+          ...errorResponse.headers,
+          'Deprecation': 'true',
+          'Sunset': 'Mon, 01 Jan 2026 00:00:00 GMT',
+          'Link': '</accounts/me/webhooks>; rel="successor-version"',
+        };
+        return errorResponse;
       }
     }
 
@@ -394,20 +431,35 @@ async function updateWebhook(event) {
       }
     );
 
-    logger.info('Webhook URL updated', { userId: user.user_id, webhookUrl: webhook_url });
+    logger.info('Webhook URL updated (deprecated endpoint)', { userId: user.user_id, webhookUrl: webhook_url });
 
     return {
       statusCode: 200,
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 
+        'Content-Type': 'application/json',
+        'Deprecation': 'true',
+        'Sunset': 'Mon, 01 Jan 2026 00:00:00 GMT',
+        'Link': '</accounts/me/webhooks>; rel="successor-version"',
+      },
       body: JSON.stringify({
         user_id: user.user_id,
         webhook_url: webhook_url || null,
         updated_at: new Date().toISOString(),
+        _deprecated: true,
+        _deprecation_message: 'This endpoint is deprecated. Please use POST /accounts/me/webhooks to create webhooks instead.',
+        _migration_guide: 'See https://docs.podpdf.com/webhooks for migration guide',
       }),
     };
   } catch (error) {
     logger.error('Error updating webhook', { error: error.message });
-    return InternalServerError.GENERIC(error.message);
+    const errorResponse = InternalServerError.GENERIC(error.message);
+    errorResponse.headers = {
+      ...errorResponse.headers,
+      'Deprecation': 'true',
+      'Sunset': 'Mon, 01 Jan 2026 00:00:00 GMT',
+      'Link': '</accounts/me/webhooks>; rel="successor-version"',
+    };
+    return errorResponse;
   }
 }
 
@@ -534,21 +586,19 @@ async function getBills(event) {
           return 0;
         });
 
-        // Format bills for response - filter to show only active bills
-        response.bills = sortedBills
-          .filter(bill => bill.is_active === true || bill.is_active === undefined)
-          .map(bill => ({
-            billing_month: bill.billing_month,
-            monthly_pdf_count: bill.monthly_pdf_count || 0,
-            monthly_billing_amount: bill.monthly_billing_amount || 0,
-            is_paid: bill.is_paid || false,
-            is_active: bill.is_active !== false, // true or undefined (backward compatible)
-            bill_id: bill.bill_id || null,
-            invoice_id: bill.invoice_id || null,
-            paid_at: bill.paid_at || null,
-            created_at: bill.created_at,
-            updated_at: bill.updated_at,
-          }));
+        // Format bills for response - return ALL bills (active and inactive) to preserve history
+        response.bills = sortedBills.map(bill => ({
+          billing_month: bill.billing_month,
+          monthly_pdf_count: bill.monthly_pdf_count || 0,
+          monthly_billing_amount: bill.monthly_billing_amount || 0,
+          is_paid: bill.is_paid || false,
+          is_active: bill.is_active !== false, // true if explicitly true or undefined (backward compatible), false only if explicitly false
+          bill_id: bill.bill_id || null,
+          invoice_id: bill.invoice_id || null,
+          paid_at: bill.paid_at || null,
+          created_at: bill.created_at,
+          updated_at: bill.updated_at,
+        }));
       } catch (error) {
         logger.error('Error getting bills from Bills table', {
           error: error.message,
@@ -767,5 +817,5 @@ async function upgradeToPaidPlan(event) {
   }
 }
 
-module.exports = { handler };
+module.exports = { handler, getLatestActiveBill };
 

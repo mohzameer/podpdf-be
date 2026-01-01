@@ -261,6 +261,36 @@ const Forbidden = {
       'Account already exists for this user',
       { action_required: 'use_existing_account' }
     ),
+
+  WEBHOOK_LIMIT_EXCEEDED: (planId, planType, currentCount, maxAllowed) =>
+    createErrorResponse(
+      403,
+      'WEBHOOK_LIMIT_EXCEEDED',
+      'Webhook limit exceeded for your plan',
+      {
+        plan_id: planId,
+        plan_type: planType,
+        current_count: currentCount,
+        max_allowed: maxAllowed,
+        upgrade_required: true,
+      }
+    ),
+
+  WEBHOOK_NOT_FOUND: () =>
+    createErrorResponse(
+      404,
+      'WEBHOOK_NOT_FOUND',
+      'Webhook not found',
+      { action_required: 'check_webhook_id' }
+    ),
+
+  WEBHOOK_ACCESS_DENIED: () =>
+    createErrorResponse(
+      403,
+      'WEBHOOK_ACCESS_DENIED',
+      'Webhook does not belong to authenticated user',
+      { action_required: 'use_correct_webhook_id' }
+    ),
 };
 
 /**

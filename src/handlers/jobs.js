@@ -51,10 +51,16 @@ async function handler(event) {
     const pathParams = event.requestContext?.http?.pathParameters || event.pathParameters || {};
     const queryParams = event.requestContext?.http?.queryStringParameters || event.queryStringParameters || {};
     const jobId = pathParams.job_id;
+    const method = event.requestContext?.http?.method || event.httpMethod;
 
     // If no job_id, handle list jobs endpoint
     if (!jobId) {
       return await handleListJobs(userId, queryParams);
+    }
+
+    // Check if this is a webhook history request
+    if (path.endsWith('/webhooks/history') && method === 'GET') {
+      return await handleGetJobWebhookHistory(jobId, userId, userSub, queryParams);
     }
 
     // Handle get single job endpoint
@@ -180,6 +186,73 @@ async function handleListJobs(userId, queryParams) {
     };
   } catch (error) {
     logger.error('List jobs handler error', { error: error.message, stack: error.stack, userId });
+    return InternalServerError.GENERIC(error.message);
+  }
+}
+
+/**
+ * Handle GET /jobs/{job_id}/webhooks/history - Get webhook history for a job
+ */
+async function handleGetJobWebhookHistory(jobId, userId, userSub, queryParams) {
+  try {
+    // Verify job exists and belongs to user
+    const job = await getJobRecord(jobId);
+    
+    if (!job) {
+      return {
+        statusCode: 404,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          error: {
+            code: 'JOB_NOT_FOUND',
+            message: 'Job not found',
+          },
+        }),
+      };
+    }
+
+    // Verify job belongs to user
+    const jobUserId = job.user_id || job.user_sub;
+    if (jobUserId !== userId && jobUserId !== userSub) {
+      return {
+        statusCode: 404,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          error: {
+            code: 'JOB_NOT_FOUND',
+            message: 'Job not found',
+          },
+        }),
+      };
+    }
+
+    // Get webhook history for this job
+    const { getWebhookHistoryByJobId } = require('../services/webhookDelivery');
+    
+    const filters = {
+      status: queryParams.status,
+      event_type: queryParams.event_type,
+      limit: queryParams.limit ? parseInt(queryParams.limit, 10) : undefined,
+      next_token: queryParams.next_token,
+    };
+
+    const result = await getWebhookHistoryByJobId(jobId, filters);
+
+    return {
+      statusCode: 200,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        job_id: jobId,
+        ...result,
+      }),
+    };
+  } catch (error) {
+    logger.error('Get job webhook history error', {
+      error: error.message,
+      stack: error.stack,
+      jobId,
+      userId,
+    });
     return InternalServerError.GENERIC(error.message);
   }
 }

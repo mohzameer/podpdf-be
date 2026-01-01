@@ -148,7 +148,8 @@ Client → API Gateway → Lambda (longjob) → SQS Queue
      - `total_pdf_count` (Number) - All-time PDF count for the user
      - `free_credits_remaining` (Number, optional) - Remaining free PDF credits for this user. Decremented when free credits are used. Can go negative (e.g., `-1`, `-2`) due to concurrent requests. Defaults to `null` if plan has no free credits. Initialized from `plan.free_credits` when user upgrades to a plan with free credits.
      - `quota_exceeded` (Boolean) - `true` if free tier user has exceeded their plan's quota limit (from `plan.monthly_quota`), `false` otherwise (defaults to `false`)
-     - `webhook_url` (String, optional) - User's default webhook URL for long job notifications
+     - `webhook_url` (String, optional) - User's default webhook URL for long job notifications (legacy, kept for backward compatibility)
+     - **Note:** The new multiple webhooks system (Phase 1) is now available. Users can configure multiple webhooks via `/accounts/me/webhooks` endpoints. The legacy `webhook_url` field is still supported for backward compatibility.
      - `created_at` (String, ISO 8601 timestamp) - Account creation timestamp
      - `upgraded_at` (String, ISO 8601 timestamp, optional) - Timestamp when user upgraded to paid plan
    - **TTL:** Not applicable (permanent storage for user records)
@@ -179,11 +180,12 @@ Client → API Gateway → Lambda (longjob) → SQS Queue
      - `s3_key` (String, optional) - S3 object key for long jobs (only for long jobs)
      - `s3_url` (String, optional) - Signed URL for S3 object (1-hour expiry, only for long jobs)
      - `s3_url_expires_at` (String, optional) - ISO 8601 timestamp when signed URL expires (only for long jobs)
-     - `webhook_url` (String, optional) - Webhook URL used for this job (user default or override, only for long jobs)
-     - `webhook_delivered` (Boolean, optional) - Whether webhook was successfully delivered
-     - `webhook_delivered_at` (String, optional) - ISO 8601 timestamp when webhook was delivered
-     - `webhook_retry_count` (Number, optional) - Number of webhook retry attempts (0-3)
-     - `webhook_retry_log` (Array, optional) - Array of webhook retry attempt timestamps and results
+     - `webhook_url` (String, optional) - Legacy webhook URL used for this job (user default or override, only for long jobs, kept for backward compatibility)
+     - `webhook_ids` (Array of Strings, optional) - List of webhook IDs that were called for this job (new multiple webhooks system)
+     - `webhook_delivered` (Boolean, optional) - Whether at least one webhook was successfully delivered
+     - `webhook_delivered_at` (String, optional) - ISO 8601 timestamp when first webhook was successfully delivered
+     - `webhook_retry_count` (Number, optional) - Maximum retry count across all webhooks (legacy field, kept for backward compatibility)
+     - `webhook_retry_log` (Array, optional) - Array of webhook retry attempt timestamps and results (legacy field, kept for backward compatibility)
      - `timeout_occurred` (Boolean, optional) - `true` if quick job exceeded 30-second timeout
    - **TTL:** Not applicable (permanent storage for job history)
    - **Field Usage Notes:**
@@ -246,10 +248,11 @@ Client → API Gateway → Lambda (longjob) → SQS Queue
    - **Attributes:**
      - `user_id` (String, ULID) - User identifier (partition key)
      - `billing_month` (String) - Billing month in `YYYY-MM` format (sort key)
-     - `monthly_pdf_count` (Number) - Number of PDFs generated in this month
-     - `monthly_billing_amount` (Number) - Total amount accumulated for this month in USD
-     - `is_paid` (Boolean) - Whether the bill has been paid (defaults to `false`)
-     - `bill_id` (String, optional) - External bill/invoice ID (for future integration with payment processors like Paddle)
+    - `monthly_pdf_count` (Number) - Number of PDFs generated in this month
+    - `monthly_billing_amount` (Number) - Total amount accumulated for this month in USD
+    - `is_paid` (Boolean) - Whether the bill has been paid (defaults to `false`)
+    - `is_active` (Boolean) - Whether this bill is for the current month (`true`) or a previous month (`false`). Bills are marked as inactive when a new month begins. All bill history is preserved in the same table.
+    - `bill_id` (String, optional) - External bill/invoice ID (for future integration with payment processors like Paddle)
      - `invoice_id` (String, optional) - Invoice ID from payment processor
      - `paddle_subscription_id` (String, optional) - Paddle subscription ID (for future integration)
      - `paddle_transaction_id` (String, optional) - Paddle transaction ID (for future integration)
@@ -481,29 +484,61 @@ Client → API Gateway → Lambda (longjob) → SQS Queue
      - `pages`, `truncated` flag
      - `completed_at` timestamp
    - Records in Analytics table
-   - **Webhook Delivery:**
-     - If `webhook_url` is configured, calls webhook with job details
-     - Retry logic: Up to 3 retries with exponential backoff (1s, 2s, 4s)
-     - Logs each retry attempt in `webhook_retry_log` array
-     - Updates `webhook_delivered`, `webhook_delivered_at`, `webhook_retry_count` in JobDetails
-     - Logs webhook retry count in Analytics table
-     - If all retries fail, marks job as completed but logs webhook failure
+   - **Webhook Delivery (Multiple Webhooks System - Phase 1):**
+     - Determines which webhooks should be notified based on:
+       - `is_active: true`
+       - Event type subscription (`events` array contains the event type)
+       - User ownership
+     - For each matching webhook:
+       - Creates delivery record in WebhookHistory
+       - Constructs payload based on event type
+       - Adds standard headers (X-Webhook-Event, X-Webhook-Id, X-Webhook-Delivery-Id, X-Webhook-Timestamp)
+       - Sends HTTP POST request
+       - Handles retries if delivery fails (3 retries with exponential backoff: 1s, 2s, 4s)
+       - Updates webhook statistics (success_count, failure_count, last_triggered_at, etc.)
+     - Updates job record with `webhook_ids` array (list of webhook IDs that were called)
+     - Updates `webhook_delivered`, `webhook_delivered_at` in JobDetails
+     - If all retries fail for all webhooks, marks job as completed but logs webhook failure
+     - **Legacy Support:** If legacy `webhook_url` is configured, it is still called for backward compatibility
 
-6. **Webhook Delivery:**
-   - POST request to user's webhook URL with:
+6. **Webhook Delivery (Multiple Webhooks System):**
+   - Event Router: Determines which webhooks should be notified based on event type and subscription
+   - For each subscribed webhook, POST request is sent with event-specific payload
+   - **Example payload for job.completed event:**
    ```json
    {
+     "event": "job.completed",
      "job_id": "9f0a4b78-2c0c-4d14-9b8b-123456789abc",
      "status": "completed",
+     "job_type": "long",
+     "mode": "html",
+     "pages": 150,
+     "truncated": false,
      "s3_url": "https://s3.amazonaws.com/...?X-Amz-Signature=...",
      "s3_url_expires_at": "2025-12-21T11:32:15Z",
-     "pages": 150,
-     "mode": "html",
-     "truncated": true,
      "created_at": "2025-12-21T10:30:00Z",
-     "completed_at": "2025-12-21T10:32:15Z"
+     "completed_at": "2025-12-21T10:32:15Z",
+     "timestamp": "2025-12-21T10:32:15Z"
    }
    ```
+   - **Standard Headers:**
+     - `Content-Type: application/json`
+     - `User-Agent: PodPDF-Webhook/1.0`
+     - `X-Webhook-Event: <event_type>`
+     - `X-Webhook-Id: <webhook_id>`
+     - `X-Webhook-Delivery-Id: <delivery_id>`
+     - `X-Webhook-Timestamp: <iso_timestamp>`
+   - **Retry Logic:**
+     - System defaults: 3 retries with exponential backoff (1s, 2s, 4s)
+     - Retries on: Network errors, Timeout (10 seconds), HTTP 5xx errors, HTTP 429 (Too Many Requests)
+     - Does NOT retry on: HTTP 2xx (success), HTTP 4xx (client errors, except 429)
+   - **Delivery Guarantees:**
+     - At-least-once delivery: Webhooks may be delivered multiple times in case of retries or system failures
+     - Best-effort delivery: Failed webhooks are retried, but if all retries fail, delivery is not guaranteed
+     - Ordering: Webhooks are delivered in the order events occur, but delivery order is not guaranteed across different webhooks
+     - Idempotency: Webhook receivers should handle duplicate deliveries (use `delivery_id` to deduplicate)
+   - **History Tracking:** Each delivery attempt (including retries) is recorded in WebhookHistory table (permanent storage, no TTL)
+   - **Statistics:** Webhook statistics (success_count, failure_count, last_triggered_at, etc.) are updated after each delivery
 
 7. **Internal Webhook Receiver:**
    - `POST /webhook/job-done` - Internal endpoint for receiving webhook notifications
@@ -628,9 +663,106 @@ Client → API Gateway → Lambda (longjob) → SQS Queue
 **Response (404 Not Found):**
 - Job not found or doesn't belong to authenticated user
 
-### 4. PUT /accounts/me/webhook
+### 3.1 GET /jobs/{job_id}/webhooks/history
 
-**Description:** Configure user's default webhook URL for long job notifications.
+**Description:** Get webhook delivery history for a specific job. Shows all webhook deliveries (across all webhooks) that were triggered for this job.
+
+**Authentication:** JWT Bearer Token required
+
+**Query Parameters:**
+- `status` (string, optional) - Filter by delivery status (`success`, `failed`, `timeout`)
+- `event_type` (string, optional) - Filter by event type (`job.completed`, `job.failed`, `job.timeout`, `job.queued`, `job.processing`)
+- `limit` (number, optional) - Maximum results (default: 50, max: 100)
+- `next_token` (string, optional) - Pagination token
+
+**Response (Success - 200 OK):**
+```json
+{
+  "job_id": "9f0a4b78-2c0c-4d14-9b8b-123456789abc",
+  "history": [
+    {
+      "delivery_id": "01ARZ3NDEKTSV4RRFFQ69G5FAY",
+      "webhook_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      "event_type": "job.completed",
+      "status": "success",
+      "status_code": 200,
+      "retry_count": 0,
+      "delivered_at": "2025-12-24T15:30:00Z",
+      "duration_ms": 245,
+      "payload_size_bytes": 1024,
+      "url": "https://api.example.com/webhooks/podpdf"
+    }
+  ],
+  "count": 1,
+  "next_token": null
+}
+```
+
+**Features:**
+- Shows all webhook delivery attempts for a specific job
+- Includes webhook_id to identify which webhook was called
+- Includes event_type, status, retry_count, and delivery details
+- Supports filtering by status and event_type
+- Pagination support for large history
+- Uses JobIdIndex GSI for efficient queries
+
+**Response (404 Not Found):**
+- Job not found or doesn't belong to authenticated user
+
+### 4. PUT /accounts/me/webhook ⚠️ DEPRECATED
+
+**Status:** ⚠️ **DEPRECATED** - This endpoint is deprecated and will be removed on **January 1, 2026**.
+
+**Description:** Configure user's default webhook URL for long job notifications. This is the legacy single webhook endpoint.
+
+**⚠️ Deprecation Notice:**
+- This endpoint is **deprecated** and will be removed in a future version
+- **Removal Date:** January 1, 2026
+- All responses include deprecation headers:
+  - `Deprecation: true`
+  - `Sunset: Mon, 01 Jan 2026 00:00:00 GMT`
+  - `Link: </accounts/me/webhooks>; rel="successor-version"`
+
+**Migration Path:**
+The new multiple webhooks system is available via `/accounts/me/webhooks` endpoints (see Phase 1 Multiple Webhooks specification). Users **must** migrate to the new system before the removal date. The new system provides enhanced features:
+- Multiple webhooks per user (plan-based limits)
+- Event-based subscriptions (subscribe only to events you care about)
+- Delivery history and statistics tracking
+- Webhook activation/deactivation
+
+**Response includes deprecation fields:**
+- `_deprecated: true`
+- `_deprecation_message: "This endpoint is deprecated. Please use POST /accounts/me/webhooks to create webhooks instead."`
+- `_migration_guide: "See https://docs.podpdf.com/webhooks for migration guide"`
+
+### 4.1 Webhook Management API (Multiple Webhooks - Phase 1)
+
+**Description:** Manage multiple webhook configurations per user with event-based subscriptions.
+
+**Endpoints:**
+- `POST /accounts/me/webhooks` - Create a new webhook
+- `GET /accounts/me/webhooks` - List all webhooks for user
+- `GET /accounts/me/webhooks/{webhook_id}` - Get webhook details
+- `PUT /accounts/me/webhooks/{webhook_id}` - Update webhook
+- `DELETE /accounts/me/webhooks/{webhook_id}` - Delete webhook
+- `GET /accounts/me/webhooks/{webhook_id}/history` - Get delivery history for a specific webhook
+- `GET /jobs/{job_id}/webhooks/history` - Get webhook delivery history for a specific job (shows all webhooks that were called for the job)
+
+**Features:**
+- Plan-based limits (1 for free tier, 5 for paid tier, 50 for enterprise)
+- Event-based subscriptions (job.completed, job.failed, job.timeout, job.queued, job.processing)
+- Delivery tracking with permanent history retention (no TTL)
+- Statistics (success_count, failure_count, last_triggered_at, etc.)
+- Retry logic (3 retries with exponential backoff)
+
+**Event Types:**
+- `job.completed` - Long job successfully completes
+- `job.failed` - Job fails during processing
+- `job.timeout` - Quick job exceeds 30-second timeout
+- `job.queued` - Long job is queued for processing
+- `job.processing` - Long job starts processing
+
+For detailed API documentation, see ENDPOINTS.md section 22.
 
 **Authentication:** JWT Bearer Token required
 
@@ -795,7 +927,7 @@ Client → API Gateway → Lambda (longjob) → SQS Queue
 
 **Notes:**
 - This endpoint is designed for internal PodPDF services
-- External users should configure their own webhook URLs via `PUT /accounts/me/webhook`
+- External users should configure their own webhooks via `POST /accounts/me/webhooks` (see Webhook Management API section)
 - All webhook receipts are logged for monitoring and debugging
 
 ### Authentication Methods

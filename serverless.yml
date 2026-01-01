@@ -35,6 +35,11 @@ provider:
     PLANS_TABLE: ${self:custom.tableNames.${self:provider.stage}.plans}
     BILLS_TABLE: ${self:custom.tableNames.${self:provider.stage}.bills}
     API_KEYS_TABLE: ${self:custom.tableNames.${self:provider.stage}.apiKeys}
+    WEBHOOKS_TABLE: ${self:custom.tableNames.${self:provider.stage}.webhooks}
+    WEBHOOK_HISTORY_TABLE: ${self:custom.tableNames.${self:provider.stage}.webhookHistory}
+    DEFAULT_WEBHOOK_MAX_RETRIES: 3
+    DEFAULT_WEBHOOK_RETRY_DELAYS: "1000,2000,4000"
+    WEBHOOK_TIMEOUT_MS: 10000
     PDFS_BUCKET: podpdf-${self:provider.stage}-pdfs
     LONGJOB_QUEUE_URL: !Ref LongJobQueue
     COGNITO_USER_POOL_CLIENT_ID: !Ref CognitoUserPoolClient
@@ -95,10 +100,14 @@ provider:
             - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.plans}
             - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.bills}
             - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.apiKeys}
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.webhooks}
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.webhookHistory}
             - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.users}/index/*
             - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.jobDetails}/index/*
             - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.bills}/index/*
             - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.apiKeys}/index/*
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.webhooks}/index/*
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.webhookHistory}/index/*
         - Effect: Allow
           Action:
             - cognito-idp:GetUser
@@ -154,6 +163,12 @@ functions:
       - sqs:
           arn: !GetAtt LongJobQueue.Arn
           batchSize: 1
+    environment:
+      WEBHOOKS_TABLE: ${self:custom.tableNames.${self:provider.stage}.webhooks}
+      WEBHOOK_HISTORY_TABLE: ${self:custom.tableNames.${self:provider.stage}.webhookHistory}
+      DEFAULT_WEBHOOK_MAX_RETRIES: 3
+      DEFAULT_WEBHOOK_RETRY_DELAYS: "1000,2000,4000"
+      WEBHOOK_TIMEOUT_MS: 10000
   
   jobs:
     handler: src/handlers/jobs.handler
@@ -164,6 +179,10 @@ functions:
           authorizer: cognitoAuthorizer
       - httpApi:
           path: /jobs/{job_id}
+          method: get
+          authorizer: cognitoAuthorizer
+      - httpApi:
+          path: /jobs/{job_id}/webhooks/history
           method: get
           authorizer: cognitoAuthorizer
   
@@ -198,6 +217,39 @@ functions:
           authorizer: cognitoAuthorizer
     environment:
       API_KEYS_TABLE: ${self:custom.tableNames.${self:provider.stage}.apiKeys}
+  
+  webhook-manager:
+    handler: src/handlers/webhook-manager.handler
+    events:
+      - httpApi:
+          path: /accounts/me/webhooks
+          method: post
+          authorizer: cognitoAuthorizer
+      - httpApi:
+          path: /accounts/me/webhooks
+          method: get
+          authorizer: cognitoAuthorizer
+      - httpApi:
+          path: /accounts/me/webhooks/{webhook_id}
+          method: get
+          authorizer: cognitoAuthorizer
+      - httpApi:
+          path: /accounts/me/webhooks/{webhook_id}
+          method: put
+          authorizer: cognitoAuthorizer
+      - httpApi:
+          path: /accounts/me/webhooks/{webhook_id}
+          method: delete
+          authorizer: cognitoAuthorizer
+      - httpApi:
+          path: /accounts/me/webhooks/{webhook_id}/history
+          method: get
+          authorizer: cognitoAuthorizer
+    environment:
+      WEBHOOKS_TABLE: ${self:custom.tableNames.${self:provider.stage}.webhooks}
+      WEBHOOK_HISTORY_TABLE: ${self:custom.tableNames.${self:provider.stage}.webhookHistory}
+      PLANS_TABLE: ${self:custom.tableNames.${self:provider.stage}.plans}
+      USERS_TABLE: ${self:custom.tableNames.${self:provider.stage}.users}
   
   accounts:
     handler: src/handlers/accounts.handler
@@ -354,6 +406,8 @@ custom:
       plans: podpdf-dev-plans
       bills: podpdf-dev-bills
       apiKeys: podpdf-dev-api-keys
+      webhooks: podpdf-dev-webhooks
+      webhookHistory: podpdf-dev-webhook-history
     prod:
       users: podpdf-prod-users
       userRateLimits: podpdf-prod-user-rate-limits
@@ -363,5 +417,7 @@ custom:
       plans: podpdf-prod-plans
       bills: podpdf-prod-bills
       apiKeys: podpdf-prod-api-keys
+      webhooks: podpdf-prod-webhooks
+      webhookHistory: podpdf-prod-webhook-history
 
 resources: ${file(resources.yml)}

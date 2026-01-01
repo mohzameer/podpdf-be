@@ -124,7 +124,7 @@ Webhook History Record (success/failure tracking)
 - `duration_ms` (Number) - Total delivery duration in milliseconds
 - `payload_size_bytes` (Number) - Size of webhook payload in bytes
 
-**TTL:** 90 days (automatic cleanup of old history records)
+**TTL:** Not applicable (permanent storage)
 
 **Note:** History records are created for each webhook delivery attempt, including retries.
 
@@ -639,9 +639,9 @@ Each webhook tracks:
 
 ### History Cleanup
 
-- History records are automatically deleted after 90 days (TTL)
-- Keeps database size manageable
-- Users can query recent history via API
+- History records are kept permanently (no TTL)
+- Provides long-term retention for debugging, auditing, and troubleshooting
+- Users can query full history via API (no time limit)
 
 ---
 
@@ -721,9 +721,7 @@ WebhookHistoryTable:
             KeyType: RANGE
         Projection:
           ProjectionType: ALL
-    TimeToLiveSpecification:
-      AttributeName: ttl
-      Enabled: true
+      # Note: TTL is disabled - webhook history is kept permanently
 ```
 
 ### Lambda Functions
@@ -801,7 +799,7 @@ Phase 1 provides:
 ✅ **Full CRUD API** (create, read, update, delete webhooks)  
 ✅ **Basic validation** (payload structure, idempotency)  
 ✅ **Retry logic** (system defaults: 3 retries with exponential backoff)  
-✅ **History tracking** (90-day retention with automatic cleanup)
+✅ **History tracking** (permanent retention - no automatic cleanup)
 
 For future enhancements (signing secrets, migration, advanced features), see `SPEC_WEBHOOKS_PHASE2.md`.
 

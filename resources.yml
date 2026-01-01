@@ -174,6 +174,85 @@ Resources:
         - Key: Service
           Value: podpdf
   
+  WebhooksTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: ${self:custom.tableNames.${self:provider.stage}.webhooks}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: webhook_id
+          AttributeType: S
+        - AttributeName: user_id
+          AttributeType: S
+        - AttributeName: is_active
+          AttributeType: S
+      KeySchema:
+        - AttributeName: webhook_id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: UserIdIndex
+          KeySchema:
+            - AttributeName: user_id
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+        - IndexName: UserIdStatusIndex
+          KeySchema:
+            - AttributeName: user_id
+              KeyType: HASH
+            - AttributeName: is_active
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      Tags:
+        - Key: Stage
+          Value: ${self:provider.stage}
+        - Key: Service
+          Value: podpdf
+  
+  WebhookHistoryTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: ${self:custom.tableNames.${self:provider.stage}.webhookHistory}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: webhook_id
+          AttributeType: S
+        - AttributeName: delivery_id
+          AttributeType: S
+        - AttributeName: job_id
+          AttributeType: S
+        - AttributeName: user_id
+          AttributeType: S
+        - AttributeName: delivered_at
+          AttributeType: S
+      KeySchema:
+        - AttributeName: webhook_id
+          KeyType: HASH
+        - AttributeName: delivery_id
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: JobIdIndex
+          KeySchema:
+            - AttributeName: job_id
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+        - IndexName: UserIdTimestampIndex
+          KeySchema:
+            - AttributeName: user_id
+              KeyType: HASH
+            - AttributeName: delivered_at
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      # Note: TTL is disabled - webhook history is kept permanently for debugging, auditing, and troubleshooting
+      Tags:
+        - Key: Stage
+          Value: ${self:provider.stage}
+        - Key: Service
+          Value: podpdf
+  
   # S3 Bucket for PDF Storage
   
   PDFsBucket:
@@ -368,4 +447,16 @@ Outputs:
     Value: !Ref BillsTable
     Export:
       Name: ${self:provider.stage}-BillsTableName
+  
+  WebhooksTableName:
+    Description: Webhooks DynamoDB Table Name
+    Value: !Ref WebhooksTable
+    Export:
+      Name: ${self:provider.stage}-WebhooksTableName
+  
+  WebhookHistoryTableName:
+    Description: Webhook History DynamoDB Table Name
+    Value: !Ref WebhookHistoryTable
+    Export:
+      Name: ${self:provider.stage}-WebhookHistoryTableName
 

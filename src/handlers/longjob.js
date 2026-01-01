@@ -21,6 +21,7 @@ const {
   createJobRecord,
 } = require('../services/jobTracking');
 const { generatePDF } = require('../services/pdf');
+const { deliverWebhooksForEvent } = require('../services/webhookDelivery');
 const { BadRequest, Forbidden, InternalServerError } = require('../utils/errors');
 
 const sqsClient = new SQSClient({ region: process.env.AWS_REGION || 'eu-central-1' });
@@ -238,6 +239,33 @@ async function handler(event) {
         userSub,
         queueUrl: QUEUE_URL,
       });
+
+      // Trigger job.queued webhook (fire and forget)
+      try {
+        const payload = {
+          event: 'job.queued',
+          job_id: jobId,
+          status: 'queued',
+          job_type: 'long',
+          mode: inputType,
+          created_at: new Date().toISOString(),
+          timestamp: new Date().toISOString(),
+        };
+
+        // Deliver webhooks asynchronously (don't wait for completion)
+        deliverWebhooksForEvent(userId, 'job.queued', payload, jobId).catch(error => {
+          logger.warn('Error delivering queued webhooks', {
+            error: error.message,
+            jobId,
+          });
+        });
+      } catch (webhookError) {
+        logger.warn('Error triggering queued webhook', {
+          error: webhookError.message,
+          jobId,
+        });
+        // Continue - webhook failure shouldn't block job queuing
+      }
     } catch (sqsError) {
       logger.error('Error sending message to SQS', {
         error: sqsError.message,

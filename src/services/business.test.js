@@ -272,8 +272,8 @@ describe('incrementPdfCount', () => {
     });
   });
 
-  describe('Paid Plan Users - New Month', () => {
-    it('should reset monthly billing when month changes', async () => {
+  describe('Paid Plan Users - New Month Bill Creation', () => {
+    it('should create a new bill when no bill exists for current month', async () => {
       const userSub = 'test-user-sub';
       const userId = 'test-user-id';
       const paidPlan = {
@@ -303,10 +303,237 @@ describe('incrementPdfCount', () => {
       const billItem = putCall[1];
       const currentMonth = new Date().toISOString().slice(0, 7);
 
-      // Should create new bill for new month
+      // Verify new bill structure
       expect(billItem.billing_month).toBe(currentMonth);
+      expect(billItem.user_id).toBe(userId);
       expect(billItem.monthly_pdf_count).toBe(1);
       expect(billItem.monthly_billing_amount).toBe(0.01);
+      expect(billItem.is_paid).toBe(false);
+      expect(billItem.is_active).toBe(true);
+      expect(billItem.created_at).toBeDefined();
+      expect(billItem.updated_at).toBeDefined();
+    });
+
+    it('should mark previous month bills as inactive when creating new bill', async () => {
+      const userSub = 'test-user-sub';
+      const userId = 'test-user-id';
+      const paidPlan = {
+        plan_id: 'paid-standard',
+        type: 'paid',
+        price_per_pdf: 0.01,
+      };
+      
+      const user = {
+        user_id: userId,
+        user_sub: userSub,
+        total_pdf_count: 100,
+      };
+
+      const previousMonth = new Date();
+      previousMonth.setMonth(previousMonth.getMonth() - 1);
+      const previousMonthStr = `${previousMonth.getFullYear()}-${String(previousMonth.getMonth() + 1).padStart(2, '0')}`;
+
+      // Return previous month's bill
+      mockQueryItems
+        .mockResolvedValueOnce([user]) // For getUserAccount
+        .mockResolvedValueOnce([ // For querying bills
+          {
+            user_id: userId,
+            billing_month: previousMonthStr,
+            monthly_pdf_count: 10,
+            monthly_billing_amount: 0.10,
+            is_active: true,
+          },
+        ]);
+      mockGetItem.mockResolvedValue(null); // No bill for current month
+      mockPutItem.mockResolvedValue({});
+      mockUpdateItem.mockResolvedValue({});
+
+      await incrementPdfCount(userSub, userId, paidPlan);
+
+      // Should mark previous bill as inactive
+      const updateCalls = mockUpdateItem.mock.calls.filter(call => 
+        call[0] === 'test-bills-table' && 
+        call[1].billing_month === previousMonthStr
+      );
+      
+      expect(updateCalls.length).toBeGreaterThan(0);
+      const updateCall = updateCalls[0];
+      expect(updateCall[2]).toContain('is_active = :false');
+
+      // Should create new bill
+      expect(mockPutItem).toHaveBeenCalledTimes(1);
+      const putCall = mockPutItem.mock.calls[0];
+      const billItem = putCall[1];
+      const currentMonth = new Date().toISOString().slice(0, 7);
+      expect(billItem.billing_month).toBe(currentMonth);
+      expect(billItem.is_active).toBe(true);
+    });
+
+    it('should create bill with correct billing month format (YYYY-MM)', async () => {
+      const userSub = 'test-user-sub';
+      const userId = 'test-user-id';
+      const paidPlan = {
+        plan_id: 'paid-standard',
+        type: 'paid',
+        price_per_pdf: 0.01,
+      };
+      
+      const user = {
+        user_id: userId,
+        user_sub: userSub,
+        total_pdf_count: 100,
+      };
+
+      mockQueryItems.mockResolvedValue([user]);
+      mockGetItem.mockResolvedValue(null);
+      mockPutItem.mockResolvedValue({});
+      mockUpdateItem.mockResolvedValue({});
+
+      await incrementPdfCount(userSub, userId, paidPlan);
+
+      const putCall = mockPutItem.mock.calls[0];
+      const billItem = putCall[1];
+      
+      // Verify billing_month format is YYYY-MM
+      expect(billItem.billing_month).toMatch(/^\d{4}-\d{2}$/);
+      const [year, month] = billItem.billing_month.split('-');
+      expect(parseInt(year, 10)).toBeGreaterThan(2020);
+      expect(parseInt(month, 10)).toBeGreaterThanOrEqual(1);
+      expect(parseInt(month, 10)).toBeLessThanOrEqual(12);
+    });
+
+    it('should create bill with initial values (count: 1, amount: price_per_pdf)', async () => {
+      const userSub = 'test-user-sub';
+      const userId = 'test-user-id';
+      const paidPlan = {
+        plan_id: 'paid-standard',
+        type: 'paid',
+        price_per_pdf: 0.05, // Different price to verify
+      };
+      
+      const user = {
+        user_id: userId,
+        user_sub: userSub,
+        total_pdf_count: 50,
+      };
+
+      mockQueryItems.mockResolvedValue([user]);
+      mockGetItem.mockResolvedValue(null);
+      mockPutItem.mockResolvedValue({});
+      mockUpdateItem.mockResolvedValue({});
+
+      await incrementPdfCount(userSub, userId, paidPlan);
+
+      const putCall = mockPutItem.mock.calls[0];
+      const billItem = putCall[1];
+      
+      expect(billItem.monthly_pdf_count).toBe(1);
+      expect(billItem.monthly_billing_amount).toBe(0.05);
+    });
+
+    it('should handle multiple previous bills and mark all as inactive', async () => {
+      const userSub = 'test-user-sub';
+      const userId = 'test-user-id';
+      const paidPlan = {
+        plan_id: 'paid-standard',
+        type: 'paid',
+        price_per_pdf: 0.01,
+      };
+      
+      const user = {
+        user_id: userId,
+        user_sub: userSub,
+        total_pdf_count: 100,
+      };
+
+      const previousMonth1 = new Date();
+      previousMonth1.setMonth(previousMonth1.getMonth() - 1);
+      const previousMonth1Str = `${previousMonth1.getFullYear()}-${String(previousMonth1.getMonth() + 1).padStart(2, '0')}`;
+
+      const previousMonth2 = new Date();
+      previousMonth2.setMonth(previousMonth2.getMonth() - 2);
+      const previousMonth2Str = `${previousMonth2.getFullYear()}-${String(previousMonth2.getMonth() + 1).padStart(2, '0')}`;
+
+      mockQueryItems
+        .mockResolvedValueOnce([user])
+        .mockResolvedValueOnce([
+          {
+            user_id: userId,
+            billing_month: previousMonth1Str,
+            monthly_pdf_count: 10,
+            monthly_billing_amount: 0.10,
+            is_active: true,
+          },
+          {
+            user_id: userId,
+            billing_month: previousMonth2Str,
+            monthly_pdf_count: 5,
+            monthly_billing_amount: 0.05,
+            is_active: true,
+          },
+        ]);
+      mockGetItem.mockResolvedValue(null);
+      mockPutItem.mockResolvedValue({});
+      mockUpdateItem.mockResolvedValue({});
+
+      await incrementPdfCount(userSub, userId, paidPlan);
+
+      // Should mark both previous bills as inactive
+      const updateCalls = mockUpdateItem.mock.calls.filter(call => 
+        call[0] === 'test-bills-table' && 
+        (call[1].billing_month === previousMonth1Str || call[1].billing_month === previousMonth2Str)
+      );
+      
+      expect(updateCalls.length).toBe(2);
+
+      // Should create new bill
+      expect(mockPutItem).toHaveBeenCalledTimes(1);
+    });
+
+    it('should continue creating bill even if marking previous bills inactive fails', async () => {
+      const userSub = 'test-user-sub';
+      const userId = 'test-user-id';
+      const paidPlan = {
+        plan_id: 'paid-standard',
+        type: 'paid',
+        price_per_pdf: 0.01,
+      };
+      
+      const user = {
+        user_id: userId,
+        user_sub: userSub,
+        total_pdf_count: 100,
+      };
+
+      const previousMonth = new Date();
+      previousMonth.setMonth(previousMonth.getMonth() - 1);
+      const previousMonthStr = `${previousMonth.getFullYear()}-${String(previousMonth.getMonth() + 1).padStart(2, '0')}`;
+
+      mockQueryItems
+        .mockResolvedValueOnce([user])
+        .mockResolvedValueOnce([
+          {
+            user_id: userId,
+            billing_month: previousMonthStr,
+            monthly_pdf_count: 10,
+            monthly_billing_amount: 0.10,
+            is_active: true,
+          },
+        ]);
+      mockGetItem.mockResolvedValue(null);
+      mockPutItem.mockResolvedValue({});
+      // Simulate error when updating previous bill
+      mockUpdateItem.mockRejectedValueOnce(new Error('Update failed'));
+
+      await incrementPdfCount(userSub, userId, paidPlan);
+
+      // Should still create new bill despite error
+      expect(mockPutItem).toHaveBeenCalledTimes(1);
+      const putCall = mockPutItem.mock.calls[0];
+      const billItem = putCall[1];
+      const currentMonth = new Date().toISOString().slice(0, 7);
+      expect(billItem.billing_month).toBe(currentMonth);
     });
 
     it('should set billing_month to current month on reset', async () => {
