@@ -1,0 +1,54 @@
+{
+  "name": "podpdf-be",
+  "version": "1.0.0",
+  "description": "PodPDF Backend - Serverless PDF generation service",
+  "main": "src/handler.js",
+  "scripts": {
+    "prebuild:lambda": "rm -rf node_modules/sharp && npm install --os=linux --cpu=x64 sharp",
+    "deploy:dev": "npm run prebuild:lambda && serverless deploy --stage dev",
+    "deploy:prod": "npm run prebuild:lambda && serverless deploy --stage prod",
+    "deploy:dev:profile": "npm run prebuild:lambda && AWS_PROFILE=podpdf-dev serverless deploy --stage dev",
+    "deploy:prod:profile": "npm run prebuild:lambda && AWS_PROFILE=podpdf-prod serverless deploy --stage prod",
+    "remove:dev": "serverless remove --stage dev",
+    "remove:prod": "serverless remove --stage prod",
+    "info:dev": "serverless info --stage dev",
+    "info:prod": "serverless info --stage prod",
+    "logs:dev": "serverless logs --function generate --stage dev --tail",
+    "logs:prod": "serverless logs --function generate --stage prod --tail",
+    "create-user": "node scripts/create-confirmed-user.js",
+    "test": "vitest",
+    "test:run": "vitest run",
+    "test:coverage": "vitest run --coverage"
+  },
+  "keywords": [
+    "pdf",
+    "serverless",
+    "aws",
+    "lambda"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@aws-sdk/client-cognito-identity-provider": "^3.490.0",
+    "@aws-sdk/client-dynamodb": "^3.490.0",
+    "@aws-sdk/client-s3": "^3.490.0",
+    "@aws-sdk/client-sqs": "^3.490.0",
+    "@aws-sdk/lib-dynamodb": "^3.490.0",
+    "@aws-sdk/s3-request-presigner": "^3.490.0",
+    "@sparticuz/chromium": "^119.0.2",
+    "jsonwebtoken": "^9.0.2",
+    "jwks-rsa": "^3.1.0",
+    "lambda-multipart-parser": "^1.0.1",
+    "marked": "^11.1.1",
+    "pdf-lib": "^1.17.1",
+    "puppeteer-core": "^21.5.2",
+    "sharp": "^0.33.5",
+    "ulid": "^2.3.0",
+    "uuid": "^9.0.1"
+  },
+  "devDependencies": {
+    "@vitest/coverage-v8": "^1.0.4",
+    "serverless": "^3.38.0",
+    "vitest": "^1.0.4"
+  }
+}

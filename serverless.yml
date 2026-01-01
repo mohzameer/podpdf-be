@@ -1,0 +1,423 @@
+service: podpdf
+
+frameworkVersion: '3'
+
+provider:
+  name: aws
+  runtime: nodejs20.x
+  stage: ${opt:stage, 'dev'}
+  region: ${opt:region, 'eu-central-1'}
+  memorySize: 1024
+  # Default timeout for lightweight HTTP handlers (jobs, accounts, health)
+  timeout: 10
+  
+  # Configure API Gateway to handle binary media types (for multipart image uploads)
+  apiGateway:
+    binaryMediaTypes:
+      - 'multipart/form-data'
+  
+  environment:
+    STAGE: ${self:provider.stage}
+    LOG_LEVEL: ${self:custom.stages.${self:provider.stage}.logLevel}
+    FREE_TIER_QUOTA: 100
+    RATE_LIMIT_PER_MINUTE: 20
+    MAX_PAGES: ${self:custom.stages.${self:provider.stage}.maxPages}
+    MAX_QUICKJOB_PAGES: ${self:custom.stages.${self:provider.stage}.maxQuickJobPages}
+    MAX_LONGJOB_PAGES: ${self:custom.stages.${self:provider.stage}.maxLongJobPages}
+    MAX_INPUT_SIZE_MB: 5
+    QUICKJOB_TIMEOUT_SECONDS: 30
+    MAX_IMAGES: 100
+    MAX_IMAGE_SIZE_MB: 5
+    USERS_TABLE: ${self:custom.tableNames.${self:provider.stage}.users}
+    USER_RATE_LIMITS_TABLE: ${self:custom.tableNames.${self:provider.stage}.userRateLimitsV2}
+    JOB_DETAILS_TABLE: ${self:custom.tableNames.${self:provider.stage}.jobDetails}
+    ANALYTICS_TABLE: ${self:custom.tableNames.${self:provider.stage}.analytics}
+    PLANS_TABLE: ${self:custom.tableNames.${self:provider.stage}.plans}
+    BILLS_TABLE: ${self:custom.tableNames.${self:provider.stage}.bills}
+    API_KEYS_TABLE: ${self:custom.tableNames.${self:provider.stage}.apiKeys}
+    WEBHOOKS_TABLE: ${self:custom.tableNames.${self:provider.stage}.webhooks}
+    WEBHOOK_HISTORY_TABLE: ${self:custom.tableNames.${self:provider.stage}.webhookHistory}
+    DEFAULT_WEBHOOK_MAX_RETRIES: 3
+    DEFAULT_WEBHOOK_RETRY_DELAYS: "1000,2000,4000"
+    WEBHOOK_TIMEOUT_MS: 10000
+    PDFS_BUCKET: podpdf-${self:provider.stage}-pdfs
+    LONGJOB_QUEUE_URL: !Ref LongJobQueue
+    COGNITO_USER_POOL_CLIENT_ID: !Ref CognitoUserPoolClient
+    COGNITO_USER_POOL_ID: !Ref CognitoUserPool
+  
+  httpApi:
+    cors:
+      allowedOrigins: ${self:custom.stages.${self:provider.stage}.cors.allowedOrigins}
+      allowedHeaders:
+        - Content-Type
+        - Authorization
+        - X-API-Key
+        - X-PDF-Pages
+        - X-PDF-Truncated
+        - X-Job-Id
+      allowedMethods:
+        - GET
+        - POST
+        - PUT
+        - DELETE
+        - OPTIONS
+      # Note: allowCredentials cannot be true when allowedOrigins includes '*'
+      allowCredentials: false
+      maxAge: 86400
+    authorizers:
+      cognitoAuthorizer:
+        type: jwt
+        identitySource: $request.header.Authorization
+        issuerUrl:
+          Fn::Join:
+            - ''
+            - - 'https://cognito-idp.'
+              - ${self:provider.region}
+              - '.amazonaws.com/'
+              - !Ref CognitoUserPool
+        audience: !Ref CognitoUserPoolClient
+  
+  logs:
+    httpApi: true
+  
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - dynamodb:GetItem
+            - dynamodb:PutItem
+            - dynamodb:UpdateItem
+            - dynamodb:DeleteItem
+            - dynamodb:Query
+            - dynamodb:Scan
+            - dynamodb:BatchWriteItem
+          Resource:
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.users}
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.userRateLimitsV2}
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.jobDetails}
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.analytics}
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.plans}
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.bills}
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.apiKeys}
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.webhooks}
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.webhookHistory}
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.users}/index/*
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.jobDetails}/index/*
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.bills}/index/*
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.apiKeys}/index/*
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.webhooks}/index/*
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.webhookHistory}/index/*
+        - Effect: Allow
+          Action:
+            - cognito-idp:GetUser
+            - cognito-idp:InitiateAuth
+          Resource:
+            - arn:aws:cognito-idp:${self:provider.region}:*:userpool/*
+        - Effect: Allow
+          Action:
+            - s3:PutObject
+            - s3:GetObject
+            - s3:DeleteObject
+          Resource:
+            - arn:aws:s3:::podpdf-${self:provider.stage}-pdfs/*
+        - Effect: Allow
+          Action:
+            - sqs:SendMessage
+            - sqs:ReceiveMessage
+            - sqs:DeleteMessage
+            - sqs:GetQueueAttributes
+          Resource:
+            - !GetAtt LongJobQueue.Arn
+
+functions:
+  quickjob:
+    handler: src/handlers/quickjob.handler
+    # Account/region currently limits Lambda memory to 3008 MB
+    memorySize: 3008
+    # Slightly below API Gateway 30s limit to avoid timeout race
+    timeout: 28
+    events:
+      - httpApi:
+          path: /quickjob
+          method: post
+          authorizer: null  # Explicitly no authorizer - supports both JWT and API key authentication
+  
+  longjob:
+    handler: src/handlers/longjob.handler
+    memorySize: 1024
+    # Slightly below API Gateway 30s limit to avoid timeout race
+    timeout: 28
+    events:
+      - httpApi:
+          path: /longjob
+          method: post
+          authorizer: null  # Explicitly no authorizer - supports both JWT and API key authentication
+  
+  longjob-processor:
+    handler: src/handlers/longjob-processor.handler
+    # Account/region currently limits Lambda memory to 3008 MB
+    memorySize: 3008
+    timeout: 900
+    events:
+      - sqs:
+          arn: !GetAtt LongJobQueue.Arn
+          batchSize: 1
+    environment:
+      WEBHOOKS_TABLE: ${self:custom.tableNames.${self:provider.stage}.webhooks}
+      WEBHOOK_HISTORY_TABLE: ${self:custom.tableNames.${self:provider.stage}.webhookHistory}
+      DEFAULT_WEBHOOK_MAX_RETRIES: 3
+      DEFAULT_WEBHOOK_RETRY_DELAYS: "1000,2000,4000"
+      WEBHOOK_TIMEOUT_MS: 10000
+  
+  jobs:
+    handler: src/handlers/jobs.handler
+    events:
+      - httpApi:
+          path: /jobs
+          method: get
+          authorizer: cognitoAuthorizer
+      - httpApi:
+          path: /jobs/{job_id}
+          method: get
+          authorizer: cognitoAuthorizer
+      - httpApi:
+          path: /jobs/{job_id}/webhooks/history
+          method: get
+          authorizer: cognitoAuthorizer
+  
+  plans:
+    handler: src/handlers/plans.handler
+    events:
+      - httpApi:
+          path: /plans
+          method: get
+          # No authorizer - public endpoint for viewing plans
+      - httpApi:
+          path: /plans/{plan_id}
+          method: get
+          # No authorizer - public endpoint for viewing plan details
+    environment:
+      PLANS_TABLE: ${self:custom.tableNames.${self:provider.stage}.plans}
+  
+  api-keys:
+    handler: src/handlers/api-keys.handler
+    events:
+      - httpApi:
+          path: /accounts/me/api-keys
+          method: post
+          authorizer: cognitoAuthorizer
+      - httpApi:
+          path: /accounts/me/api-keys
+          method: get
+          authorizer: cognitoAuthorizer
+      - httpApi:
+          path: /accounts/me/api-keys/{api_key_id}
+          method: delete
+          authorizer: cognitoAuthorizer
+    environment:
+      API_KEYS_TABLE: ${self:custom.tableNames.${self:provider.stage}.apiKeys}
+  
+  webhook-manager:
+    handler: src/handlers/webhook-manager.handler
+    events:
+      - httpApi:
+          path: /accounts/me/webhooks
+          method: post
+          authorizer: cognitoAuthorizer
+      - httpApi:
+          path: /accounts/me/webhooks
+          method: get
+          authorizer: cognitoAuthorizer
+      - httpApi:
+          path: /accounts/me/webhooks/{webhook_id}
+          method: get
+          authorizer: cognitoAuthorizer
+      - httpApi:
+          path: /accounts/me/webhooks/{webhook_id}
+          method: put
+          authorizer: cognitoAuthorizer
+      - httpApi:
+          path: /accounts/me/webhooks/{webhook_id}
+          method: delete
+          authorizer: cognitoAuthorizer
+      - httpApi:
+          path: /accounts/me/webhooks/{webhook_id}/history
+          method: get
+          authorizer: cognitoAuthorizer
+    environment:
+      WEBHOOKS_TABLE: ${self:custom.tableNames.${self:provider.stage}.webhooks}
+      WEBHOOK_HISTORY_TABLE: ${self:custom.tableNames.${self:provider.stage}.webhookHistory}
+      PLANS_TABLE: ${self:custom.tableNames.${self:provider.stage}.plans}
+      USERS_TABLE: ${self:custom.tableNames.${self:provider.stage}.users}
+  
+  accounts:
+    handler: src/handlers/accounts.handler
+    events:
+      - httpApi:
+          path: /accounts
+          method: post
+          # No authorizer - called after Amplify signup
+      - httpApi:
+          path: /accounts/me
+          method: get
+          authorizer: cognitoAuthorizer
+      - httpApi:
+          path: /accounts/me/billing
+          method: get
+          authorizer: cognitoAuthorizer
+      - httpApi:
+          path: /accounts/me/bills
+          method: get
+          authorizer: cognitoAuthorizer
+      - httpApi:
+          path: /accounts/me/stats
+          method: get
+          authorizer: cognitoAuthorizer
+      - httpApi:
+          path: /accounts/me/upgrade
+          method: put
+          authorizer: cognitoAuthorizer
+      - httpApi:
+          path: /accounts/me
+          method: delete
+          authorizer: cognitoAuthorizer
+      - httpApi:
+          path: /accounts/me/webhook
+          method: put
+          authorizer: cognitoAuthorizer
+  
+  webhook-receiver:
+    handler: src/handlers/webhook-receiver.handler
+    events:
+      - httpApi:
+          path: /webhook/job-done
+          method: post
+          authorizer: null  # No authorizer - uses payload validation for security
+  
+  health:
+    handler: src/handlers/health.handler
+    events:
+      - httpApi:
+          path: /health
+          method: get
+  
+  signup:
+    handler: src/handlers/signup.handler
+    events: ${self:custom.stages.${self:provider.stage}.signupEvents}
+    environment:
+      COGNITO_USER_POOL_CLIENT_ID: !Ref CognitoUserPoolClient
+  
+  confirm-signup:
+    handler: src/handlers/confirm-signup.handler
+    events: ${self:custom.stages.${self:provider.stage}.confirmSignupEvents}
+    environment:
+      COGNITO_USER_POOL_CLIENT_ID: !Ref CognitoUserPoolClient
+  
+  signin:
+    handler: src/handlers/signin.handler
+    events: ${self:custom.stages.${self:provider.stage}.signinEvents}
+    environment:
+      COGNITO_USER_POOL_CLIENT_ID: !Ref CognitoUserPoolClient
+  
+  refresh:
+    handler: src/handlers/refresh.handler
+    events: ${self:custom.stages.${self:provider.stage}.refreshEvents}
+    environment:
+      COGNITO_USER_POOL_CLIENT_ID: !Ref CognitoUserPoolClient
+  
+  cognito-post-confirmation:
+    handler: src/handlers/cognito-post-confirmation.handler
+    events:
+      - cognitoUserPool:
+          pool: CognitoUserPool
+          trigger: PostConfirmation
+    environment:
+      USERS_TABLE: ${self:custom.tableNames.${self:provider.stage}.users}
+
+custom:
+  stages:
+    dev:
+      logLevel: debug
+      maxPages: 2
+      maxQuickJobPages: 2
+      maxLongJobPages: 4
+      signupEvents:
+        - httpApi:
+            path: /signup
+            method: post
+            # No authorizer - public endpoint
+      confirmSignupEvents:
+        - httpApi:
+            path: /confirm-signup
+            method: post
+            # No authorizer - public endpoint
+      signinEvents:
+        - httpApi:
+            path: /signin
+            method: post
+            # No authorizer - public endpoint
+      refreshEvents:
+        - httpApi:
+            path: /refresh
+            method: post
+            # No authorizer - public endpoint
+      cors:
+        allowedOrigins:
+          - '*'
+    prod:
+      logLevel: info
+      maxPages: 100
+      maxQuickJobPages: 25
+      maxLongJobPages: 100
+      signupEvents:
+        - httpApi:
+            path: /signup
+            method: post
+            # No authorizer - public endpoint
+      confirmSignupEvents:
+        - httpApi:
+            path: /confirm-signup
+            method: post
+            # No authorizer - public endpoint
+      signinEvents:
+        - httpApi:
+            path: /signin
+            method: post
+            # No authorizer - public endpoint
+      refreshEvents:
+        - httpApi:
+            path: /refresh
+            method: post
+            # No authorizer - public endpoint
+      cors:
+        allowedOrigins:
+          - https://yourdomain.com
+          - https://www.yourdomain.com
+          - https://app.yourdomain.com
+  
+  tableNames:
+    dev:
+      users: podpdf-dev-users
+      userRateLimits: podpdf-dev-user-rate-limits
+      userRateLimitsV2: podpdf-dev-user-rate-limits-v2
+      jobDetails: podpdf-dev-job-details
+      analytics: podpdf-dev-analytics
+      plans: podpdf-dev-plans
+      bills: podpdf-dev-bills
+      apiKeys: podpdf-dev-api-keys
+      webhooks: podpdf-dev-webhooks
+      webhookHistory: podpdf-dev-webhook-history
+    prod:
+      users: podpdf-prod-users
+      userRateLimits: podpdf-prod-user-rate-limits
+      userRateLimitsV2: podpdf-prod-user-rate-limits-v2
+      jobDetails: podpdf-prod-job-details
+      analytics: podpdf-prod-analytics
+      plans: podpdf-prod-plans
+      bills: podpdf-prod-bills
+      apiKeys: podpdf-prod-api-keys
+      webhooks: podpdf-prod-webhooks
+      webhookHistory: podpdf-prod-webhook-history
+
+resources: ${file(resources.yml)}
