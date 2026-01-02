@@ -58,6 +58,14 @@ For production or if you want least-privilege access, use this custom policy tha
       "Resource": "*"
     },
     {
+      "Sid": "APIGatewayReadAccessGlobal",
+      "Effect": "Allow",
+      "Action": [
+        "apigateway:GET"
+      ],
+      "Resource": "*"
+    },
+    {
       "Sid": "APIGatewayAccess",
       "Effect": "Allow",
       "Action": [
@@ -147,6 +155,27 @@ For production or if you want least-privilege access, use this custom policy tha
         "sts:GetCallerIdentity"
       ],
       "Resource": "*"
+    },
+    {
+      "Sid": "ACMAccess",
+      "Effect": "Allow",
+      "Action": [
+        "acm:ListCertificates",
+        "acm:DescribeCertificate",
+        "acm:GetCertificate"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "Route53Access",
+      "Effect": "Allow",
+      "Action": [
+        "route53:ListHostedZones",
+        "route53:GetHostedZone",
+        "route53:ChangeResourceRecordSets",
+        "route53:GetChange"
+      ],
+      "Resource": "*"
     }
   ]
 }
@@ -191,9 +220,10 @@ For production or if you want least-privilege access, use this custom policy tha
 - **Why:** Create IAM roles that Lambda functions use
 - **Needed for:** Lambda execution roles, API Gateway authorizer roles
 
-### API Gateway (`apigateway:*`, `execute-api:*`)
-- **Why:** Create and manage HTTP API endpoints
-- **Needed for:** Creating APIs, routes, integrations, authorizers, CORS
+### API Gateway (`apigateway:*`, `apigatewayv2:*`, `execute-api:*`)
+- **Why:** Create and manage HTTP API endpoints and custom domains
+- **Needed for:** Creating APIs, routes, integrations, authorizers, CORS, custom domain management
+- **Note:** `apigateway:GET` with `Resource: "*"` is required for the domain manager plugin to check if domains exist globally
 
 ### DynamoDB (`dynamodb:*`)
 - **Why:** Create and manage DynamoDB tables
@@ -215,6 +245,14 @@ For production or if you want least-privilege access, use this custom policy tha
 ### STS (`sts:GetCallerIdentity`)
 - **Why:** Verify AWS credentials and account
 - **Needed for:** Authentication checks
+
+### ACM (`acm:ListCertificates`, `acm:DescribeCertificate`, `acm:GetCertificate`)
+- **Why:** Serverless domain manager needs to find and use SSL certificates for custom domains
+- **Needed for:** Custom domain configuration (api.podpdf.com)
+
+### Route53 (`route53:*` for hosted zones)
+- **Why:** Create DNS records for custom domains (if createRoute53Record is true)
+- **Needed for:** Custom domain DNS configuration
 
 ---
 
@@ -326,6 +364,14 @@ If you want even more restrictive permissions, you can limit resources by stage/
       ]
     },
     {
+      "Sid": "APIGatewayReadAccessGlobal",
+      "Effect": "Allow",
+      "Action": [
+        "apigateway:GET"
+      ],
+      "Resource": "*"
+    },
+    {
       "Sid": "APIGatewayAccess",
       "Effect": "Allow",
       "Action": [
@@ -333,7 +379,9 @@ If you want even more restrictive permissions, you can limit resources by stage/
       ],
       "Resource": [
         "arn:aws:apigateway:eu-central-1::/apis/*",
-        "arn:aws:apigateway:eu-central-1::/apis/*/*"
+        "arn:aws:apigateway:eu-central-1::/apis/*/*",
+        "arn:aws:apigateway:eu-central-1::/domainnames/*",
+        "arn:aws:apigateway:eu-central-1::/domainnames/*/*"
       ]
     },
     {
@@ -400,6 +448,27 @@ If you want even more restrictive permissions, you can limit resources by stage/
         "sts:GetCallerIdentity"
       ],
       "Resource": "*"
+    },
+    {
+      "Sid": "ACMAccess",
+      "Effect": "Allow",
+      "Action": [
+        "acm:ListCertificates",
+        "acm:DescribeCertificate",
+        "acm:GetCertificate"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "Route53Access",
+      "Effect": "Allow",
+      "Action": [
+        "route53:ListHostedZones",
+        "route53:GetHostedZone",
+        "route53:ChangeResourceRecordSets",
+        "route53:GetChange"
+      ],
+      "Resource": "*"
     }
   ]
 }
@@ -449,7 +518,6 @@ If you get permission errors, check which service is failing and ensure the poli
 3. **Separate Users:** Use different IAM users for dev and prod deployments
 4. **Rotate Keys:** Rotate access keys every 90 days
 5. **Enable MFA:** Add multi-factor authentication to IAM users
-6. **Monitor:** Use CloudTrail to monitor IAM user activity
 
 ---
 

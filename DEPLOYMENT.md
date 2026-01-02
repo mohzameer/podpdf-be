@@ -602,10 +602,6 @@ serverless print --stage dev
    - Update AWS access keys periodically
    - Rotate Cognito app client secrets
 
-3. **Enable CloudTrail**
-   - Monitor all API calls
-   - Track deployment activities
-
 ---
 
 ## Quick Reference

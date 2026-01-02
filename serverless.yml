@@ -2,6 +2,9 @@ service: podpdf
 
 frameworkVersion: '3'
 
+plugins:
+  - serverless-domain-manager
+
 provider:
   name: aws
   runtime: nodejs20.x
@@ -336,6 +339,16 @@ functions:
       USERS_TABLE: ${self:custom.tableNames.${self:provider.stage}.users}
 
 custom:
+  customDomain:
+    domainName: api.podpdf.com
+    basePath: ''
+    stage: prod
+    endpointType: regional
+    securityPolicy: tls_1_2
+    apiType: http
+    certificateArn: arn:aws:acm:eu-central-1:637423622157:certificate/3ca50ff6-5010-4381-a8ac-e1f97abf7a49
+    createRoute53Record: false
+  
   stages:
     dev:
       logLevel: debug
@@ -392,9 +405,9 @@ custom:
             # No authorizer - public endpoint
       cors:
         allowedOrigins:
-          - https://yourdomain.com
-          - https://www.yourdomain.com
-          - https://app.yourdomain.com
+          - https://podpdf.com
+          - https://www.podpdf.com
+          - https://app.podpdf.com
   
   tableNames:
     dev:

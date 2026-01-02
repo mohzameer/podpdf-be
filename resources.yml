@@ -375,14 +375,8 @@ Resources:
       Domain: podpdf-${self:provider.stage}-auth
       UserPoolId: !Ref CognitoUserPool
   
-  # Lambda Permission for Post Confirmation trigger
-  CognitoPostConfirmationLambdaPermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      FunctionName: podpdf-${self:provider.stage}-cognito-post-confirmation
-      Principal: cognito-idp.amazonaws.com
-      Action: lambda:InvokeFunction
-      SourceArn: !GetAtt CognitoUserPool.Arn
+  # Note: Lambda Permission for Post Confirmation trigger is automatically created by Serverless Framework
+  # when using cognitoUserPool events in serverless.yml. No manual permission needed.
 
 Outputs:
   CognitoUserPoolId:
