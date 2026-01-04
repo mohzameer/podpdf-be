@@ -151,29 +151,6 @@ Resources:
         - Key: Service
           Value: podpdf
   
-  BillsTable:
-    Type: AWS::DynamoDB::Table
-    Properties:
-      TableName: ${self:custom.tableNames.${self:provider.stage}.bills}
-      BillingMode: PAY_PER_REQUEST
-      AttributeDefinitions:
-        - AttributeName: user_id
-          AttributeType: S
-        - AttributeName: billing_month
-          AttributeType: S
-      KeySchema:
-        - AttributeName: user_id
-          KeyType: HASH
-        - AttributeName: billing_month
-          KeyType: RANGE
-      # GSI removed - primary key (user_id + billing_month) can be queried directly
-      # No need for redundant GSI with same structure
-      Tags:
-        - Key: Stage
-          Value: ${self:provider.stage}
-        - Key: Service
-          Value: podpdf
-  
   WebhooksTable:
     Type: AWS::DynamoDB::Table
     Properties:
@@ -253,6 +230,40 @@ Resources:
         - Key: Service
           Value: podpdf
   
+  CreditTransactionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: ${self:custom.tableNames.${self:provider.stage}.creditTransactions}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: transaction_id
+          AttributeType: S
+        - AttributeName: user_id
+          AttributeType: S
+        - AttributeName: job_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: transaction_id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: UserIdIndex
+          KeySchema:
+            - AttributeName: user_id
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+        - IndexName: JobIdIndex
+          KeySchema:
+            - AttributeName: job_id
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      Tags:
+        - Key: Stage
+          Value: ${self:provider.stage}
+        - Key: Service
+          Value: podpdf
+  
   # S3 Bucket for PDF Storage
   
   PDFsBucket:
@@ -290,6 +301,39 @@ Resources:
       VisibilityTimeout: 900
       MessageRetentionPeriod: 1209600
       ReceiveMessageWaitTimeSeconds: 0
+      Tags:
+        - Key: Stage
+          Value: ${self:provider.stage}
+        - Key: Service
+          Value: podpdf
+  
+  # SQS FIFO Queue for Credit Deduction Processing
+  
+  CreditDeductionQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: podpdf-${self:provider.stage}-credit-deduction-queue.fifo
+      FifoQueue: true
+      ContentBasedDeduplication: true
+      VisibilityTimeout: 60
+      MessageRetentionPeriod: 1209600
+      ReceiveMessageWaitTimeSeconds: 0
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt CreditDeductionDLQ.Arn
+        maxReceiveCount: 3
+      Tags:
+        - Key: Stage
+          Value: ${self:provider.stage}
+        - Key: Service
+          Value: podpdf
+  
+  CreditDeductionDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: podpdf-${self:provider.stage}-credit-deduction-dlq.fifo
+      FifoQueue: true
+      ContentBasedDeduplication: true
+      MessageRetentionPeriod: 1209600
       Tags:
         - Key: Stage
           Value: ${self:provider.stage}
@@ -435,12 +479,6 @@ Outputs:
     Value: !GetAtt LongJobQueue.Arn
     Export:
       Name: ${self:provider.stage}-LongJobQueueArn
-  
-  BillsTableName:
-    Description: Bills DynamoDB Table Name
-    Value: !Ref BillsTable
-    Export:
-      Name: ${self:provider.stage}-BillsTableName
   
   WebhooksTableName:
     Description: Webhooks DynamoDB Table Name

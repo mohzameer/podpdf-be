@@ -13,7 +13,8 @@ const {
   checkRateLimit,
   checkQuota,
   checkConversionType,
-  incrementPdfCount,
+  checkCredits,
+  queueCreditDeduction,
 } = require('../services/business');
 const {
   generateJobId,
@@ -236,6 +237,13 @@ async function handler(event) {
       return quotaCheck.error;
     }
 
+    // Check credits for paid plans (before PDF generation)
+    const costPerPdf = plan && plan.price_per_pdf ? plan.price_per_pdf : 0;
+    const creditsCheck = await checkCredits(userId, plan, costPerPdf);
+    if (!creditsCheck.allowed) {
+      return creditsCheck.error;
+    }
+
     // Generate job ID
     jobId = generateJobId();
 
@@ -372,8 +380,22 @@ async function handler(event) {
       truncated,
     });
 
-    // Increment PDF count and track billing
-    await incrementPdfCount(userSub, user.user_id, plan);
+    // Queue credit deduction for ALL users (paid and free)
+    // For free plans: amount = 0 (no credit deduction, but still increments PDF count)
+    // For paid plans: amount = costPerPdf (deducts credits and increments PDF count)
+    // This ensures total_pdf_count is always updated in one reliable place (credit processor)
+    const deductionAmount = (plan && plan.type === 'paid' && costPerPdf > 0) ? costPerPdf : 0;
+    
+    await queueCreditDeduction(userId, jobId, deductionAmount).catch(error => {
+      // Log error but don't fail the request - PDF was already generated
+      // If queue fails, PDF is lost but customer not charged (acceptable)
+      logger.warn('Failed to queue credit deduction', {
+        error: error.message,
+        userId,
+        jobId,
+        deductionAmount,
+      });
+    });
 
     // Create analytics record
     await createAnalyticsRecord({

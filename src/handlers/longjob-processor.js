@@ -13,7 +13,7 @@ const {
 } = require('../services/jobTracking');
 const { generatePDF } = require('../services/pdf');
 const { uploadPDF, generateSignedUrl, getExpirationTimestamp } = require('../services/s3');
-const { incrementPdfCount, getUserAccount, getPlan } = require('../services/business');
+const { getUserAccount, getPlan, queueCreditDeduction } = require('../services/business');
 const { deliverWebhooksForEvent } = require('../services/webhookDelivery');
 const { InternalServerError } = require('../utils/errors');
 
@@ -203,9 +203,23 @@ async function processMessage(record) {
       s3_url_expires_at: expiresAt,
     });
 
-    // Increment PDF count and track billing
+    // Queue credit deduction for ALL users (paid and free)
+    // For free plans: amount = 0 (no credit deduction, but still increments PDF count)
+    // For paid plans: amount = price_per_pdf (deducts credits and increments PDF count)
+    // This ensures total_pdf_count is always updated in one reliable place (credit processor)
     if (user && user.user_id) {
-      await incrementPdfCount(userSub, user.user_id, plan);
+      const deductionAmount = (plan && plan.type === 'paid' && plan.price_per_pdf > 0) ? plan.price_per_pdf : 0;
+      
+      await queueCreditDeduction(user.user_id, jobId, deductionAmount).catch(error => {
+        // Log error but don't fail the request - PDF was already generated
+        // If queue fails, PDF is lost but customer not charged (acceptable)
+        logger.warn('Failed to queue credit deduction', {
+          error: error.message,
+          userId: user.user_id,
+          jobId,
+          deductionAmount,
+        });
+      });
     }
 
     // Create analytics record

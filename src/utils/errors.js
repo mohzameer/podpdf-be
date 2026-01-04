@@ -254,6 +254,18 @@ const Forbidden = {
       }
     ),
 
+  INSUFFICIENT_CREDITS: (currentBalance, requiredAmount) =>
+    createErrorResponse(
+      403,
+      'INSUFFICIENT_CREDITS',
+      'Insufficient credits to generate PDF. Please purchase credits to continue.',
+      {
+        current_balance: currentBalance,
+        required_amount: requiredAmount,
+        action_required: 'purchase_credits',
+      }
+    ),
+
   ACCOUNT_ALREADY_EXISTS: () =>
     createErrorResponse(
       409,

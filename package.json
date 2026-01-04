@@ -1,6 +1,6 @@
 {
   "name": "podpdf-be",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "PodPDF Backend - Serverless PDF generation service",
   "main": "src/handler.js",
   "scripts": {
@@ -16,6 +16,8 @@
     "logs:dev": "serverless logs --function generate --stage dev --tail",
     "logs:prod": "serverless logs --function generate --stage prod --tail",
     "create-user": "node scripts/create-confirmed-user.js",
+    "cleanup:lambda:dev": "./scripts/cleanup-lambda-versions.sh dev",
+    "cleanup:lambda:prod": "./scripts/cleanup-lambda-versions.sh prod",
     "test": "vitest",
     "test:run": "vitest run",
     "test:coverage": "vitest run --coverage"
@@ -51,6 +53,7 @@
     "@vitest/coverage-v8": "^1.0.4",
     "serverless": "^3.38.0",
     "serverless-domain-manager": "^8.0.0",
+    "serverless-prune-plugin": "^2.0.2",
     "vitest": "^1.0.4"
   }
 }

@@ -15,6 +15,7 @@ const {
   checkQuota,
   checkConversionType,
   getUserAccount,
+  checkCredits,
 } = require('../services/business');
 const {
   generateJobId,
@@ -166,6 +167,13 @@ async function handler(event) {
       return quotaCheck.error;
     }
 
+    // Check credits for paid plans (before PDF generation)
+    const costPerPdf = plan && plan.price_per_pdf ? plan.price_per_pdf : 0;
+    const creditsCheck = await checkCredits(userId, plan, costPerPdf);
+    if (!creditsCheck.allowed) {
+      return creditsCheck.error;
+    }
+
     // Pre-validate page limit by generating PDF and checking page count
     // This ensures we return the error immediately instead of queuing and failing later
     let pdfResult;
@@ -197,8 +205,8 @@ async function handler(event) {
       pages,
     });
 
-    // Get user's default webhook URL if not provided in request
-    const finalWebhookUrl = webhookUrl || user.webhook_url || null;
+    // Don't use webhook URL from request - only use webhooks from webhook table
+    const finalWebhookUrl = null;
 
     // Generate job ID
     const jobId = generateJobId();

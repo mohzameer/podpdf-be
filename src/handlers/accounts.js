@@ -16,109 +16,6 @@ const { validateWebhookUrl } = require('../services/validation');
 const USERS_TABLE = process.env.USERS_TABLE;
 
 /**
- * Get the latest active bill for a user, creating a new one for current month if needed
- * @param {string} userId - User ID
- * @param {boolean} isPaidPlan - Whether user is on a paid plan (only create bill for paid plans)
- * @returns {Promise<object|null>} Latest active bill or null
- */
-async function getLatestActiveBill(userId, isPaidPlan = false) {
-  try {
-    const { queryItems, getItem, putItem, updateItem } = require('../services/dynamodb');
-    const BILLS_TABLE = process.env.BILLS_TABLE;
-    
-    // Get current month
-    const now = new Date();
-    const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-    const nowISO = now.toISOString();
-    
-    // Query all bills for this user
-    const bills = await queryItems(
-      BILLS_TABLE,
-      'user_id = :user_id',
-      { ':user_id': userId },
-      null
-    );
-    
-    // Filter for active bills (is_active === true or undefined for backward compatibility)
-    const activeBills = (bills || []).filter(bill => 
-      bill.is_active === true || bill.is_active === undefined
-    );
-    
-    // Check if there's an active bill for the current month
-    const currentMonthBill = activeBills.find(bill => bill.billing_month === currentMonth);
-    
-    if (currentMonthBill) {
-      // Return the current month's active bill
-      return currentMonthBill;
-    }
-    
-    // No active bill for current month - check if we need to create one
-    if (isPaidPlan) {
-      // Mark all previous month bills as inactive
-      if (activeBills.length > 0) {
-        try {
-          for (const bill of activeBills) {
-            if (bill.billing_month !== currentMonth) {
-              await updateItem(
-                BILLS_TABLE,
-                {
-                  user_id: userId,
-                  billing_month: bill.billing_month,
-                },
-                'SET is_active = :false, updated_at = :updated_at',
-                {
-                  ':false': false,
-                  ':updated_at': nowISO,
-                }
-              );
-            }
-          }
-        } catch (error) {
-          logger.warn('Error marking previous bills as inactive', {
-            error: error.message,
-            userId,
-          });
-          // Continue with bill creation even if marking inactive fails
-        }
-      }
-      
-      // Create new bill for current month
-      try {
-        const newBill = {
-          user_id: userId,
-          billing_month: currentMonth,
-          monthly_pdf_count: 0,
-          monthly_billing_amount: 0,
-          is_paid: false,
-          is_active: true,
-          created_at: nowISO,
-          updated_at: nowISO,
-        };
-        
-        await putItem(BILLS_TABLE, newBill);
-        return newBill;
-      } catch (error) {
-        logger.error('Error creating new bill', {
-          error: error.message,
-          userId,
-          currentMonth,
-        });
-        return null;
-      }
-    }
-    
-    // For free plans or if no bills exist, return null
-    return null;
-  } catch (error) {
-    logger.error('Error getting latest active bill', {
-      error: error.message,
-      userId,
-    });
-    return null;
-  }
-}
-
-/**
  * Main handler - routes to appropriate function based on HTTP method and path
  */
 async function handler(event) {
@@ -134,10 +31,6 @@ async function handler(event) {
       return await getAccount(event);
     } else if (method === 'GET' && path === '/accounts/me/billing') {
       return await getBilling(event);
-    } else if (method === 'GET' && path === '/accounts/me/bills') {
-      return await getBills(event);
-    } else if (method === 'GET' && path === '/accounts/me/stats') {
-      return await getStats(event);
     } else if (method === 'DELETE' && path === '/accounts/me') {
       return await deleteAccount(event);
     } else if (method === 'PUT' && path === '/accounts/me/webhook') {
@@ -437,7 +330,7 @@ async function updateWebhook(event) {
 }
 
 /**
- * GET /accounts/me/billing - Get monthly billing information
+ * GET /accounts/me/billing - Get credit-based billing information
  */
 async function getBilling(event) {
   try {
@@ -454,46 +347,29 @@ async function getBilling(event) {
     const planId = user.plan_id || 'free-basic';
     const plan = await getPlan(planId);
 
+    // Get all data directly from Users table (no queries needed)
+    const credits_balance = user.credits_balance || 0;
+    const total_pdf_count = user.total_pdf_count || 0;
+    const free_credits_remaining = user.free_credits_remaining || 0;
+
+    // Get price_per_pdf from plan
+    const price_per_pdf = plan?.price_per_pdf || 0;
     const isPaidPlan = plan && plan.type === 'paid';
 
-    // Get current month
-    const now = new Date();
-    const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    // Calculate total_amount = total_pdf_count × price_per_pdf (for paid users)
+    // This represents the current value of all PDFs generated at current price
+    const total_amount = isPaidPlan ? total_pdf_count * price_per_pdf : 0;
 
     // Build billing response
     const billing = {
       plan_id: planId,
       plan_type: plan?.type || 'free',
-      billing_month: currentMonth,
-      monthly_billing_amount: 0,
-      pdf_count: 0, // All-time for free, current month for paid
-      price_per_pdf: plan?.price_per_pdf || 0,
-      is_paid: false,
+      credits_balance: credits_balance,
+      free_credits_remaining: free_credits_remaining,
+      total_pdf_count: total_pdf_count, // Total PDFs generated (all-time)
+      total_amount: total_amount, // Total amount (total_pdf_count × price_per_pdf for paid users)
+      price_per_pdf: price_per_pdf,
     };
-
-    if (isPaidPlan && user.user_id) {
-      // For paid plans: show latest active bill's count and billing
-      try {
-        const latestBill = await getLatestActiveBill(user.user_id, true);
-
-        if (latestBill) {
-          billing.billing_month = latestBill.billing_month;
-          billing.monthly_billing_amount = latestBill.monthly_billing_amount || 0;
-          billing.pdf_count = latestBill.monthly_pdf_count || 0;
-          billing.is_paid = latestBill.is_paid || false;
-        }
-      } catch (error) {
-        logger.error('Error getting bill from Bills table', {
-          error: error.message,
-          userSub,
-          userId: user.user_id,
-        });
-        // Continue with default values (0)
-      }
-    } else {
-      // For free plans: show all-time count
-      billing.pdf_count = user.total_pdf_count || 0; // All-time count
-    }
 
     return {
       statusCode: 200,
@@ -504,177 +380,6 @@ async function getBilling(event) {
     };
   } catch (error) {
     logger.error('Error getting billing information', {
-      error: error.message,
-      stack: error.stack,
-    });
-    return InternalServerError.GENERIC(error.message);
-  }
-}
-
-/**
- * GET /accounts/me/bills - Get list of all bills/invoices for the user
- */
-async function getBills(event) {
-  try {
-    const userSub = await extractUserSub(event);
-
-    // Get user account
-    const user = await getUserAccount(userSub);
-    if (!user) {
-      return Forbidden.ACCOUNT_NOT_FOUND();
-    }
-
-    // Get plan to check if user is on paid plan
-    const { getPlan } = require('../services/business');
-    const planId = user.plan_id || 'free-basic';
-    const plan = await getPlan(planId);
-
-    const isPaidPlan = plan && plan.type === 'paid';
-
-    // Build response
-    const response = {
-      plan_id: planId,
-      plan_type: plan?.type || 'free',
-      bills: [],
-    };
-
-    // For paid plans, query all bills from Bills table
-    if (isPaidPlan && user.user_id) {
-      try {
-        const { queryItems } = require('../services/dynamodb');
-        const BILLS_TABLE = process.env.BILLS_TABLE;
-        
-        // Query all bills for this user using primary key (user_id is partition key)
-        const bills = await queryItems(
-          BILLS_TABLE,
-          'user_id = :user_id',
-          { ':user_id': user.user_id },
-          null // No GSI needed - querying primary key directly
-        );
-
-        // Sort bills by billing_month descending (most recent first)
-        const sortedBills = (bills || []).sort((a, b) => {
-          if (a.billing_month > b.billing_month) return -1;
-          if (a.billing_month < b.billing_month) return 1;
-          return 0;
-        });
-
-        // Format bills for response - return ALL bills (active and inactive) to preserve history
-        response.bills = sortedBills.map(bill => ({
-          billing_month: bill.billing_month,
-          monthly_pdf_count: bill.monthly_pdf_count || 0,
-          monthly_billing_amount: bill.monthly_billing_amount || 0,
-          is_paid: bill.is_paid || false,
-          is_active: bill.is_active !== false, // true if explicitly true or undefined (backward compatible), false only if explicitly false
-          bill_id: bill.bill_id || null,
-          invoice_id: bill.invoice_id || null,
-          paid_at: bill.paid_at || null,
-          created_at: bill.created_at,
-          updated_at: bill.updated_at,
-        }));
-      } catch (error) {
-        logger.error('Error getting bills from Bills table', {
-          error: error.message,
-          userSub,
-          userId: user.user_id,
-        });
-        // Continue with empty bills array
-      }
-    }
-
-    return {
-      statusCode: 200,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(response),
-    };
-  } catch (error) {
-    logger.error('Error getting bills list', {
-      error: error.message,
-      stack: error.stack,
-    });
-    return InternalServerError.GENERIC(error.message);
-  }
-}
-
-/**
- * GET /accounts/me/stats - Get total PDF count, monthly PDF count, and total amount
- * For free plans: returns total_pdf_count (all-time) from Users table, total_pdf_count_month (current month) from Bills table, amount is 0
- * For paid plans: returns total_pdf_count (current month) and total_pdf_count_month (current month) from Bills table, plus monthly billing amount
- */
-async function getStats(event) {
-  try {
-    const userSub = await extractUserSub(event);
-    if (!userSub) {
-      return {
-        statusCode: 401,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          error: {
-            code: 'UNAUTHORIZED',
-            message: 'Missing or invalid JWT token',
-          },
-        }),
-      };
-    }
-
-    // Get user account
-    const user = await getUserAccount(userSub);
-    if (!user) {
-      return Forbidden.ACCOUNT_NOT_FOUND();
-    }
-
-    // Get plan to check if user is on paid plan
-    const { getPlan } = require('../services/business');
-    const planId = user.plan_id || 'free-basic';
-    const plan = await getPlan(planId);
-
-    // Normalize plan type for comparison
-    const planType = plan?.type ? String(plan.type).toLowerCase().trim() : null;
-    const isPaidPlan = planType === 'paid';
-
-    // Get current month
-    const now = new Date();
-    const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-
-    // Build response
-    const stats = {
-      plan_id: planId,
-      plan_type: plan?.type || 'free',
-      total_pdf_count: 0,
-      total_pdf_count_month: 0,
-      total_amount: 0,
-    };
-
-    // Get latest active bill for both free and paid plans (to get monthly count)
-    // Only create new bill for paid plans
-    let latestBill = null;
-    if (user.user_id) {
-      latestBill = await getLatestActiveBill(user.user_id, isPaidPlan);
-    }
-
-    if (isPaidPlan) {
-      // For paid plans: get latest active bill's stats from Bills table
-      if (latestBill) {
-        stats.total_pdf_count = latestBill.monthly_pdf_count || 0;
-        stats.total_pdf_count_month = latestBill.monthly_pdf_count || 0;
-        stats.total_amount = latestBill.monthly_billing_amount || 0;
-      }
-    } else {
-      // For free plans: get all-time count from Users table, monthly count from latest active bill
-      stats.total_pdf_count = user.total_pdf_count || 0;
-      stats.total_pdf_count_month = latestBill ? (latestBill.monthly_pdf_count || 0) : 0;
-      stats.total_amount = 0; // Free plans have no billing
-    }
-
-    return {
-      statusCode: 200,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        stats,
-      }),
-    };
-  } catch (error) {
-    logger.error('Error getting stats', {
       error: error.message,
       stack: error.stack,
     });
@@ -790,5 +495,5 @@ async function upgradeToPaidPlan(event) {
   }
 }
 
-module.exports = { handler, getLatestActiveBill };
+module.exports = { handler };
 

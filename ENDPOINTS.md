@@ -236,6 +236,7 @@ const response = await fetch('/quickjob', {
      - All-time quota: Configurable per plan via `monthly_quota` in `Plans` table (default: 50 PDFs from `FREE_TIER_QUOTA` environment variable) (**403** `QUOTA_EXCEEDED` after that; must upgrade).
    - Paid plan:
      - No quota; still subject to API Gateway throttling.
+     - **Credit Check:** Verifies user has sufficient credits (`credits_balance >= price_per_pdf` or `free_credits_remaining > 0`). If insufficient, rejects with **403** `INSUFFICIENT_CREDITS` error.
    - **Page Limit (HTML/Markdown):** Maximum page limit is enforced per environment (e.g., 2 pages in dev, 100 pages in prod). If the generated PDF exceeds this limit, the request is rejected with **400** `PAGE_LIMIT_EXCEEDED` error. No truncation is performed.
    - **Page Limit (Images):** Same maximum page limit as HTML/Markdown (e.g., 2 pages in dev, 100 pages in prod). Each image = 1 page. The image count is checked **before conversion**. If the image count exceeds the page limit, the request is rejected with **400** `PAGE_LIMIT_EXCEEDED` error. No truncation is performed.
 
@@ -386,8 +387,7 @@ Authorization: Bearer <api_key>
     },
     "printBackground": true,
     "scale": 1.0
-  },
-  "webhook_url": "https://example.com/webhook"
+  }
 }
 ```
 
@@ -407,8 +407,7 @@ Authorization: Bearer <api_key>
     },
     "printBackground": true,
     "scale": 1.0
-  },
-  "webhook_url": "https://example.com/webhook"
+  }
 }
 ```
 
@@ -422,18 +421,17 @@ Authorization: Bearer <api_key>
   - Markdown content to render (GitHub-flavored).
 - `options` (object, optional)
   - Passed to Puppeteer `page.pdf()` (same as quickjob).
-- `webhook_url` (string, optional)
-  - Override user's default webhook URL for this job.
-  - Must be a valid HTTPS URL.
-  - If not provided, uses user's default webhook URL from `Users` table.
+- `webhook_url` (string, optional, **ignored**)
+  - **Note:** This parameter is ignored. Webhooks are only delivered to webhooks registered via the webhook management API (`POST /accounts/me/webhooks`). See Section 22 for webhook management.
 
 ### 2.3 Validation Rules (Summary)
 
 Same validation as `/quickjob` (authentication, account, body, business logic), plus:
 
 - **Conversion Type Validation:** The requested `input_type` must be enabled for the user's plan. If the plan has `enabled_conversion_types` configured and the requested type is not in the list, the request is rejected with **403** `CONVERSION_TYPE_NOT_ENABLED` error. Note: Image conversion type is not supported in `/longjob` (returns `400 Bad Request` before conversion type validation).
+- **Credit Check (Paid Plans):** Verifies user has sufficient credits (`credits_balance >= price_per_pdf` or `free_credits_remaining > 0`). If insufficient, rejects with **403** `INSUFFICIENT_CREDITS` error. This check happens before queuing the job.
 - **Page Limit Check:** The PDF is generated synchronously before queuing to validate the page count. If the page limit is exceeded, the request is rejected immediately with `400 Bad Request` (`PAGE_LIMIT_EXCEEDED`). The job is only queued if the page limit check passes.
-- `webhook_url` (if provided) must be a valid HTTPS URL.
+- **Webhook Delivery:** Webhooks are only delivered to webhooks registered via the webhook management API (`POST /accounts/me/webhooks`). The `webhook_url` parameter in the request body is ignored. See Section 22 for webhook management.
 
 ### 2.4 Response
 
@@ -461,11 +459,10 @@ Same validation as `/quickjob` (authentication, account, body, business logic), 
 #### 2.4.2 Error Responses
 
 Same error responses as `/quickjob` (400, 401, 403, 429, 500), plus:
-- `400 Bad Request` – Invalid `webhook_url` (not HTTPS or malformed URL).
 - `400 Bad Request` – PDF page count exceeds maximum allowed pages (`PAGE_LIMIT_EXCEEDED`). **This error is returned immediately before queuing the job.** No job record is created and no webhook will be sent.
 - `403 Forbidden` – Conversion type not enabled for plan (`CONVERSION_TYPE_NOT_ENABLED`). **This error is returned before queuing the job.** No job record is created and no webhook will be sent.
 
-**Note:** The page limit is checked synchronously before queuing. If the limit is exceeded, the error is returned immediately in the initial response. If the check passes, the job is queued and processing happens asynchronously. Use `GET /jobs/{job_id}` to check status, or wait for webhook notification.
+**Note:** The page limit is checked synchronously before queuing. If the limit is exceeded, the error is returned immediately in the initial response. If the check passes, the job is queued and processing happens asynchronously. Use `GET /jobs/{job_id}` to check status, or wait for webhook notification (if webhooks are configured via the webhook management API).
 
 ---
 
@@ -1271,9 +1268,9 @@ Authorization: Bearer <jwt_token>
 ## 9. `GET /accounts/me/billing`
 
 **Description:**  
-Get current month's billing summary for the authenticated user. Returns accumulated billing amount and PDF count for the current month only.
+Get billing summary for the authenticated user. Returns credit balance, all-time PDF count, and calculated total amount based on plan pricing.
 
-**Note:** For a complete list of all bills/invoices, use `GET /accounts/me/bills`.
+**Note:** This endpoint uses direct reads from the `Users` table for fast, reliable data access. Credit purchase history is available via `CreditTransactions` table queries.
 
 ### 7.1 Authentication
 
@@ -1307,11 +1304,11 @@ Authorization: Bearer <jwt_token>
   "billing": {
     "plan_id": "paid-standard",
     "plan_type": "paid",
-    "billing_month": "2025-12",
-    "monthly_billing_amount": 0.125,
-    "pdf_count": 25,
-    "price_per_pdf": 0.01,
-    "is_paid": false
+    "credits_balance": 10.50,
+    "free_credits_remaining": 5,
+    "total_pdf_count": 25,
+    "total_amount": 0.25,
+    "price_per_pdf": 0.01
   }
 }
 ```
@@ -1322,11 +1319,11 @@ Authorization: Bearer <jwt_token>
   "billing": {
     "plan_id": "free-basic",
     "plan_type": "free",
-    "billing_month": "2025-12",
-    "monthly_billing_amount": 0,
-    "pdf_count": 42,
-    "price_per_pdf": 0,
-    "is_paid": false
+    "credits_balance": 0,
+    "free_credits_remaining": null,
+    "total_pdf_count": 42,
+    "total_amount": 0,
+    "price_per_pdf": 0
   }
 }
 ```
@@ -1334,13 +1331,11 @@ Authorization: Bearer <jwt_token>
 **Fields:**
 - `plan_id` (string): Current plan ID.
 - `plan_type` (string): `"free"` or `"paid"`.
-- `billing_month` (string): Current billing month in `YYYY-MM` format (e.g., `"2025-12"`).
-- `monthly_billing_amount` (number): Total amount accumulated for the current month in USD. `0` for free plan users or if no bill exists for current month.
-- `pdf_count` (number): 
-  - **For free plan users:** All-time PDF count (cumulative total since account creation, does not reset).
-  - **For paid plan users:** Current month's PDF count only.
+- `credits_balance` (number): Prepaid credit balance in USD. `0` for free plan users.
+- `free_credits_remaining` (number|null): Remaining free PDF credits. `null` if plan has no free credits.
+- `total_pdf_count` (number): All-time PDF count (cumulative total since account creation, does not reset).
+- `total_amount` (number): Calculated as `total_pdf_count × price_per_pdf`. `0` for free plan users.
 - `price_per_pdf` (number): Price per PDF from the plan configuration. `0` for free plan users.
-- `is_paid` (boolean): Whether the current month's bill has been paid. `false` for free plan users.
 
 #### 7.3.2 Error Responses
 
@@ -1363,11 +1358,11 @@ curl -X GET https://api.podpdf.com/accounts/me/billing \
   "billing": {
     "plan_id": "paid-standard",
     "plan_type": "paid",
-    "billing_month": "2025-12",
-    "monthly_billing_amount": 0.125,
-    "pdf_count": 25,
-    "price_per_pdf": 0.01,
-    "is_paid": false
+    "credits_balance": 10.50,
+    "free_credits_remaining": 5,
+    "total_pdf_count": 25,
+    "total_amount": 0.25,
+    "price_per_pdf": 0.01
   }
 }
 ```
@@ -1378,26 +1373,23 @@ curl -X GET https://api.podpdf.com/accounts/me/billing \
   "billing": {
     "plan_id": "free-basic",
     "plan_type": "free",
-    "billing_month": "2025-12",
-    "monthly_billing_amount": 0,
-    "pdf_count": 42,
-    "price_per_pdf": 0,
-    "is_paid": false
+    "credits_balance": 0,
+    "free_credits_remaining": null,
+    "total_pdf_count": 42,
+    "total_amount": 0,
+    "price_per_pdf": 0
   }
 }
 ```
 
 ### 7.6 Usage Notes
 
-- **PDF Count Behavior:**
-  - **Free Plan Users:** `pdf_count` shows the **all-time total** (cumulative since account creation, does not reset).
-  - **Paid Plan Users:** `pdf_count` shows the **current month's count only** (resets each month).
-- **Current Month Summary:** For paid plan users, `monthly_billing_amount` and `pdf_count` show the current month's usage. For free plan users, `monthly_billing_amount` is always `0`, but `pdf_count` shows all-time total.
-- **Bills Table:** Monthly billing information is stored in a separate `Bills` table. Each month gets a new bill record.
-- **Billing Calculation:** For paid plan users, `monthly_billing_amount = pdf_count × price_per_pdf`.
-- **Bill Creation:** Bill records are automatically created when a paid user generates their first PDF of the month.
-- **Payment Status:** The `is_paid` flag indicates whether the bill has been paid. This can be updated when payment is processed (e.g., via Paddle integration).
-- **Billing Month Format:** The `billing_month` field uses `YYYY-MM` format (e.g., `"2025-12"` for December 2025).
+- **Data Source:** All data is read directly from the `Users` table for fast, reliable access. No expensive queries or aggregations are performed.
+- **PDF Count:** `total_pdf_count` shows the **all-time total** (cumulative since account creation, does not reset) for both free and paid users. Updated atomically by the credit deduction processor.
+- **Credit Balance:** `credits_balance` shows the current prepaid credit balance. Users purchase credits upfront, and credits are deducted after each PDF generation.
+- **Free Credits:** `free_credits_remaining` shows remaining free PDF credits (consumed before prepaid credits). `null` if the plan has no free credits.
+- **Total Amount Calculation:** `total_amount = total_pdf_count × price_per_pdf`. This represents the total value of PDFs generated (for informational purposes). `0` for free plan users.
+- **Credit Transactions:** All credit purchases and deductions are logged in the `CreditTransactions` table for audit trail and history queries.
 
 ---
 
@@ -2927,128 +2919,6 @@ When a long job completes, a POST request is sent to the configured webhook URL 
 **Webhook Response:**
 - Webhook endpoint should return `200 OK` to confirm receipt
 - Any other status code will trigger retries
-
----
-
-## 21. `POST /webhook/job-done`
-
-**Description:**  
-Internal webhook receiver endpoint that receives job completion notifications from api.podpdf.com. This endpoint validates webhook payloads and processes job completion events. Designed for use by PodPDF's own internal services.
-
-### 21.1 Authentication
-
-- **Type:** None (public endpoint with payload validation)
-- **Security:** Payload structure validation and job verification prevent abuse
-- **Note:** This endpoint is intended for internal use by PodPDF services. External users should configure their own webhooks via `POST /accounts/me/webhooks` (see Section 22).
-
-### 21.2 HTTP Request
-
-**Method:** `POST`  
-**Path:** `/webhook/job-done`  
-**Content-Type:** `application/json`
-
-#### 21.2.1 Request Body
-
-The webhook payload sent from api.podpdf.com when a job completes:
-
-```json
-{
-  "job_id": "9f0a4b78-2c0c-4d14-9b8b-123456789abc",
-  "status": "completed",
-  "s3_url": "https://s3.amazonaws.com/podpdf-dev-pdfs/9f0a4b78-2c0c-4d14-9b8b-123456789abc.pdf?X-Amz-Signature=...",
-  "s3_url_expires_at": "2025-12-21T11:32:15Z",
-  "pages": 150,
-  "mode": "html",
-  "truncated": false,
-  "created_at": "2025-12-21T10:30:00Z",
-  "completed_at": "2025-12-21T10:32:15Z"
-}
-```
-
-**Required Fields:**
-- `job_id` (string, required): UUID of the completed job
-- `status` (string, required): Job status - must be one of: `queued`, `processing`, `completed`, `failed`, `timeout`
-
-**Optional Fields:**
-- `pages` (integer, optional): Number of pages in the generated PDF
-- `mode` (string, optional): Input mode - one of: `html`, `markdown`, `image`
-- `truncated` (boolean, optional): Whether the PDF was truncated due to page limit
-- `s3_url` (string, optional): Signed S3 URL for downloading the PDF (for long jobs)
-- `s3_url_expires_at` (string, optional): ISO 8601 timestamp when the S3 URL expires
-- `created_at` (string, optional): ISO 8601 timestamp when the job was created
-- `completed_at` (string, optional): ISO 8601 timestamp when the job completed
-- `error_message` (string, optional): Error message if job failed
-
-### 21.3 Validation
-
-The endpoint performs comprehensive validation to prevent abuse:
-
-1. **Structure Validation:**
-   - Request body must be valid JSON object
-   - Required fields must be present
-   - Field types must match expected types
-
-2. **Format Validation:**
-   - `job_id` must be a valid UUID format
-   - `status` must be one of the valid status values
-   - Timestamps must be in ISO 8601 format
-   - URLs must be valid URL format
-   - Numbers must be valid integers
-
-3. **Size Validation:**
-   - Payload size limited to 100KB maximum
-
-4. **Job Verification:**
-   - Job must exist in the system
-   - Job status must match the webhook payload status (prevents replay attacks)
-
-### 21.4 Response
-
-#### 21.4.1 Success Response
-
-- **Status:** `200 OK`
-- **Content-Type:** `application/json`
-- **Body:**
-
-```json
-{
-  "message": "Webhook received successfully",
-  "job_id": "9f0a4b78-2c0c-4d14-9b8b-123456789abc",
-  "status": "completed"
-}
-```
-
-#### 21.4.2 Error Responses
-
-- `400 Bad Request` – Invalid payload structure, missing required fields, invalid field types, or payload size exceeds limit
-  - Error code: `INVALID_PARAMETER`
-  - Details include specific validation failure reason
-
-- `404 Not Found` – Job not found in system
-  - Error code: `JOB_NOT_FOUND`
-
-- `400 Bad Request` – Status mismatch (webhook status doesn't match actual job status)
-  - Error code: `INVALID_PARAMETER`
-  - Prevents replay attacks with outdated statuses
-
-- `500 Internal Server Error` – Server-side processing error
-  - Error code: `INTERNAL_SERVER_ERROR`
-
-### 21.5 Security Features
-
-- **Payload Structure Validation:** Validates all fields before processing
-- **Job Existence Verification:** Ensures job exists before processing
-- **Status Mismatch Detection:** Prevents replay attacks by verifying status matches
-- **Size Limits:** Prevents abuse with oversized payloads (100KB max)
-- **Comprehensive Logging:** All requests logged with source IP for monitoring
-
-### 21.6 Usage Notes
-
-- This endpoint is designed for internal PodPDF services
-- External users should configure their own webhooks via `POST /accounts/me/webhooks` (see Section 22 for webhook management)
-- The endpoint validates all webhook payloads before processing
-- Failed validations return appropriate error codes without processing
-- All webhook receipts are logged for monitoring and debugging
 
 ---
 

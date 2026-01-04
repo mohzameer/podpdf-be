@@ -6,13 +6,16 @@
 const { getItem, updateItem, putItem } = require('./dynamodb');
 const { Forbidden } = require('../utils/errors');
 const logger = require('../utils/logger');
+const { SQSClient, SendMessageCommand } = require('@aws-sdk/client-sqs');
 
 const USERS_TABLE = process.env.USERS_TABLE;
 const USER_RATE_LIMITS_TABLE = process.env.USER_RATE_LIMITS_TABLE;
 const PLANS_TABLE = process.env.PLANS_TABLE;
-const BILLS_TABLE = process.env.BILLS_TABLE;
+const CREDIT_DEDUCTION_QUEUE_URL = process.env.CREDIT_DEDUCTION_QUEUE_URL;
 const RATE_LIMIT_PER_MINUTE = parseInt(process.env.RATE_LIMIT_PER_MINUTE || '20', 10);
 const FREE_TIER_QUOTA = parseInt(process.env.FREE_TIER_QUOTA || '100', 10);
+
+const sqsClient = new SQSClient({ region: process.env.AWS_REGION || 'eu-central-1' });
 
 /**
  * Get user account from DynamoDB
@@ -229,198 +232,6 @@ async function checkQuota(userSub, user, plan) {
 }
 
 /**
- * Increment PDF count for user and track billing for paid users in Bills table
- * @param {string} userSub - Cognito user sub
- * @param {string} userId - User ID (ULID)
- * @param {object} plan - User's plan configuration (optional, for billing tracking)
- * @returns {Promise<void>}
- */
-async function incrementPdfCount(userSub, userId, plan = null) {
-  try {
-    // Get current month in YYYY-MM format
-    const now = new Date();
-    const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-    const nowISO = now.toISOString();
-    
-    // Get user account
-    const user = await getUserAccount(userSub);
-    if (!user) {
-      logger.warn('Could not increment PDF count - user not found', {
-        userSub,
-        userId,
-      });
-      return;
-    }
-    
-    // Check if plan has free credits and consume them first
-    let billingIncrement = 0;
-    const isPaidPlan = plan && plan.type === 'paid' && plan.price_per_pdf;
-    const hasFreeCredits = plan && plan.free_credits && plan.free_credits > 0;
-    
-    if (hasFreeCredits && isPaidPlan) {
-      // Try to consume free credit first
-      try {
-        // Atomically decrement free_credits_remaining
-        const updatedUser = await updateItem(
-          USERS_TABLE,
-          { user_id: userId },
-          'SET free_credits_remaining = if_not_exists(free_credits_remaining, :zero) - :dec',
-          { ':zero': 0, ':dec': 1 }
-        );
-        
-        const remainingCredits = updatedUser.free_credits_remaining;
-        
-        // Charge only if free credits are exhausted (<= 0)
-        if (remainingCredits <= 0) {
-          billingIncrement = plan.price_per_pdf;
-          logger.debug('Free credits exhausted, charging user', {
-            userId,
-            remainingCredits,
-            charge: billingIncrement,
-          });
-        } else {
-          logger.debug('Free credit used, no charge', {
-            userId,
-            remainingCredits,
-          });
-        }
-      } catch (error) {
-        // If update fails, charge to be safe
-        logger.warn('Error consuming free credit, charging user', {
-          userId,
-          error: error.message,
-        });
-        billingIncrement = plan.price_per_pdf;
-      }
-    } else if (isPaidPlan) {
-      // No free credits, charge normally
-      billingIncrement = plan.price_per_pdf;
-    }
-    
-    // Update total_pdf_count in Users table
-    try {
-      await updateItem(
-        USERS_TABLE,
-        { user_id: userId },
-        'SET total_pdf_count = if_not_exists(total_pdf_count, :zero) + :inc',
-        { ':zero': 0, ':inc': 1 }
-      );
-    } catch (error) {
-      // If user_id update fails, try with actual user_id from user object
-      if (user.user_id && user.user_id !== userId) {
-        await updateItem(
-          USERS_TABLE,
-          { user_id: user.user_id },
-          'SET total_pdf_count = if_not_exists(total_pdf_count, :zero) + :inc',
-          { ':zero': 0, ':inc': 1 }
-        );
-      } else {
-        logger.warn('Could not increment PDF count in Users table', {
-          userSub,
-          userId,
-          error: error.message,
-        });
-      }
-    }
-    
-    // For paid plans, create or update bill record in Bills table (only if charging)
-    if (isPaidPlan && billingIncrement > 0) {
-      try {
-        const { getItem, queryItems } = require('./dynamodb');
-        
-        // Try to get existing bill for this month
-        const existingBill = await getItem(BILLS_TABLE, {
-          user_id: userId,
-          billing_month: currentMonth,
-        });
-        
-        if (existingBill) {
-          // Update existing bill
-          await updateItem(
-            BILLS_TABLE,
-            {
-              user_id: userId,
-              billing_month: currentMonth,
-            },
-            'SET monthly_pdf_count = monthly_pdf_count + :inc, monthly_billing_amount = monthly_billing_amount + :billing, updated_at = :updated_at',
-            {
-              ':inc': 1,
-              ':billing': billingIncrement,
-              ':updated_at': nowISO,
-            }
-          );
-        } else {
-          // New month detected - mark all previous month bills as inactive
-          try {
-            // Query all bills for this user
-            const allBills = await queryItems(
-              BILLS_TABLE,
-              'user_id = :user_id',
-              { ':user_id': userId },
-              null
-            );
-            
-            // Mark all bills from previous months as inactive
-            if (allBills && allBills.length > 0) {
-              for (const bill of allBills) {
-                if (bill.billing_month !== currentMonth && (bill.is_active === undefined || bill.is_active === true)) {
-                  await updateItem(
-                    BILLS_TABLE,
-                    {
-                      user_id: userId,
-                      billing_month: bill.billing_month,
-                    },
-                    'SET is_active = :false, updated_at = :updated_at',
-                    {
-                      ':false': false,
-                      ':updated_at': nowISO,
-                    }
-                  );
-                }
-              }
-            }
-          } catch (error) {
-            logger.warn('Error marking previous bills as inactive', {
-              error: error.message,
-              userSub,
-              userId,
-            });
-            // Continue with bill creation even if marking inactive fails
-          }
-          
-          // Create new bill record for this month
-          await putItem(BILLS_TABLE, {
-            user_id: userId,
-            billing_month: currentMonth,
-            monthly_pdf_count: 1,
-            monthly_billing_amount: billingIncrement,
-            is_paid: false,
-            is_active: true,
-            created_at: nowISO,
-            updated_at: nowISO,
-          });
-        }
-      } catch (error) {
-        logger.error('Error updating bill record', {
-          error: error.message,
-          userSub,
-          userId,
-          billingMonth: currentMonth,
-        });
-        // Don't throw - bill tracking is not critical for PDF generation
-      }
-    }
-  } catch (error) {
-    logger.error('Error incrementing PDF count', {
-      error: error.message,
-      userSub,
-      userId,
-    });
-    // Don't throw - PDF count increment is not critical
-  }
-}
-
-/**
  * Check if conversion type is enabled for the plan
  * @param {object} plan - Plan configuration
  * @param {string} inputType - Requested input type ('html', 'markdown', 'image')
@@ -516,13 +327,123 @@ async function validateUserAndPlan(userSub) {
   }
 }
 
+/**
+ * Check if user has sufficient credits for PDF generation
+ * @param {string} userId - User ID (ULID)
+ * @param {object} plan - User's plan configuration
+ * @param {number} costPerPdf - Cost per PDF (from plan.price_per_pdf)
+ * @returns {Promise<{allowed: boolean, error: object|null, currentBalance: number}>}
+ */
+async function checkCredits(userId, plan, costPerPdf) {
+  try {
+    // Free tier users don't need credits
+    if (!plan || plan.type !== 'paid' || !costPerPdf || costPerPdf <= 0) {
+      return { allowed: true, error: null, currentBalance: null };
+    }
+
+    // Get user account
+    const user = await getItem(USERS_TABLE, { user_id: userId });
+    if (!user) {
+      logger.warn('User not found for credit check', { userId });
+      return {
+        allowed: false,
+        error: Forbidden.ACCOUNT_NOT_FOUND(),
+        currentBalance: null,
+      };
+    }
+
+    // Check if plan has free credits and user has remaining free credits
+    const hasFreeCredits = plan.free_credits && plan.free_credits > 0;
+    const freeCreditsRemaining = user.free_credits_remaining || 0;
+
+    // If user has free credits remaining, allow (free credits are consumed first)
+    if (hasFreeCredits && freeCreditsRemaining > 0) {
+      return { allowed: true, error: null, currentBalance: user.credits_balance || 0 };
+    }
+
+    // Check prepaid credits balance
+    const creditsBalance = user.credits_balance || 0;
+
+    if (creditsBalance < costPerPdf) {
+      return {
+        allowed: false,
+        error: Forbidden.INSUFFICIENT_CREDITS(creditsBalance, costPerPdf),
+        currentBalance: creditsBalance,
+      };
+    }
+
+    return { allowed: true, error: null, currentBalance: creditsBalance };
+  } catch (error) {
+    logger.error('Error checking credits', {
+      error: error.message,
+      userId,
+    });
+    // On error, allow the request (fail open) - but log the error
+    return { allowed: true, error: null, currentBalance: null };
+  }
+}
+
+/**
+ * Queue credit deduction message to SQS FIFO queue
+ * Only called after PDF is successfully generated
+ * @param {string} userId - User ID (ULID)
+ * @param {string} jobId - Job ID (UUID)
+ * @param {number} amount - Amount to deduct (cost per PDF)
+ * @returns {Promise<{success: boolean, error: string|null}>}
+ */
+async function queueCreditDeduction(userId, jobId, amount) {
+  try {
+    if (!CREDIT_DEDUCTION_QUEUE_URL) {
+      logger.error('Credit deduction queue URL not configured', { userId, jobId });
+      return { success: false, error: 'queue_not_configured' };
+    }
+
+    // Prepare SQS message for FIFO queue
+    // MessageGroupId = user_id (ensures sequential processing per user)
+    // MessageDeduplicationId = job_id (FIFO deduplication prevents duplicate processing)
+    const messageBody = {
+      user_id: userId,
+      amount: amount,
+      job_id: jobId,
+      timestamp: Date.now(),
+    };
+
+    const command = new SendMessageCommand({
+      QueueUrl: CREDIT_DEDUCTION_QUEUE_URL,
+      MessageBody: JSON.stringify(messageBody),
+      MessageGroupId: userId, // Sequential processing per user
+      MessageDeduplicationId: jobId, // Deduplication by job_id
+    });
+
+    await sqsClient.send(command);
+
+    logger.info('Credit deduction queued', {
+      userId,
+      jobId,
+      amount,
+    });
+
+    return { success: true, error: null };
+  } catch (error) {
+    logger.error('Error queueing credit deduction', {
+      error: error.message,
+      userId,
+      jobId,
+      amount,
+    });
+    // Don't throw - if queue fails, PDF is lost but customer not charged (acceptable)
+    return { success: false, error: error.message };
+  }
+}
+
 module.exports = {
   getUserAccount,
   getPlan,
   checkRateLimit,
   checkQuota,
   checkConversionType,
-  incrementPdfCount,
+  checkCredits,
+  queueCreditDeduction,
   validateUserAndPlan,
 };
 
