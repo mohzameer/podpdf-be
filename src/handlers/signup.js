@@ -30,29 +30,29 @@ async function handler(event) {
       body = JSON.parse(event.body || '{}');
     } catch (error) {
       logger.warn('Invalid JSON in request body', { error: error.message });
-      return BadRequest('Invalid JSON in request body');
+      return BadRequest.INVALID_PARAMETER('body', 'Invalid JSON in request body');
     }
 
     const { email, password, name } = body;
 
     // Validate input
     if (!email || !password) {
-      return BadRequest('Missing required fields: email and password');
+      return BadRequest.INVALID_PARAMETER('email/password', 'Missing required fields');
     }
 
     if (typeof email !== 'string' || typeof password !== 'string') {
-      return BadRequest('email and password must be strings');
+      return BadRequest.INVALID_PARAMETER('email/password', 'email and password must be strings');
     }
 
     // Validate email format (basic check)
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(email)) {
-      return BadRequest('Invalid email format');
+      return BadRequest.INVALID_PARAMETER('email', 'Invalid email format');
     }
 
     // Validate password meets Cognito requirements
     if (password.length < 8) {
-      return BadRequest('Password must be at least 8 characters long');
+      return BadRequest.INVALID_PARAMETER('password', 'Password must be at least 8 characters long');
     }
 
     logger.info('Sign-up attempt', { email });
@@ -109,11 +109,11 @@ async function handler(event) {
 
       // Handle specific Cognito errors
       if (error.name === 'UsernameExistsException') {
-        return BadRequest('An account with this email already exists');
+        return BadRequest.INVALID_PARAMETER('email', 'An account with this email already exists');
       } else if (error.name === 'InvalidPasswordException') {
-        return BadRequest('Password does not meet requirements. Password must be at least 8 characters and contain uppercase, lowercase, numbers, and symbols.');
+        return BadRequest.INVALID_PARAMETER('password', 'Password does not meet requirements. Password must be at least 8 characters and contain uppercase, lowercase, numbers, and symbols.');
       } else if (error.name === 'InvalidParameterException') {
-        return BadRequest(`Invalid parameter: ${error.message}`);
+        return BadRequest.INVALID_PARAMETER('parameter', `Invalid parameter: ${error.message}`);
       } else if (error.name === 'TooManyRequestsException') {
         return {
           statusCode: 429,
@@ -128,14 +128,14 @@ async function handler(event) {
       }
 
       // Generic error
-      return InternalServerError('Sign-up failed. Please try again later.');
+      return InternalServerError.GENERIC('Sign-up failed. Please try again later.');
     }
   } catch (error) {
     logger.error('Unexpected error in sign-up handler', {
       error: error.message,
       stack: error.stack,
     });
-    return InternalServerError('An unexpected error occurred');
+    return InternalServerError.GENERIC('An unexpected error occurred');
   }
 }
 

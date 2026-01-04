@@ -90,6 +90,7 @@ Client → API Gateway → Lambda (longjob) → SQS Queue
   - Global: 1000 requests/second with 2000 burst
 - **Authorization:** 
   - `/quickjob` and `/longjob`: No API Gateway authorizer (authentication handled in Lambda to support both JWT and API key)
+  - `/health`: Lambda authorizer that validates API keys from `x-api-key` header
   - Other authenticated endpoints: JWT authorizer integrated with Amazon Cognito
 - **CloudWatch Logs:** Enabled for API Gateway access logging
 
@@ -1015,7 +1016,7 @@ All options are passed directly to Puppeteer's `page.pdf()` method. Common optio
 
 ### API Key Table Structure
 
-The `ApiKeys` table stores API keys for programmatic access to `/quickjob` and `/longjob` endpoints.
+The `ApiKeys` table stores API keys for programmatic access to `/quickjob`, `/longjob`, and `/health` endpoints.
 
 **Key Design:**
 - **Partition Key:** `api_key` (the API key itself, stored in plaintext for fast lookups)
@@ -1040,11 +1041,16 @@ The `ApiKeys` table stores API keys for programmatic access to `/quickjob` and `
 
 **Authentication:**
 - API keys can be provided in two ways:
-  1. `X-API-Key: <api_key>` header
+  1. `X-API-Key: <api_key>` header (preferred)
   2. `Authorization: Bearer <api_key>` header (for compatibility with standard auth patterns)
 - API key lookup is a single DynamoDB `GetItem` operation using the API key as partition key
 - If found and `is_active: true`, the request proceeds with the associated `user_id` and `user_sub`
 - If not found or `is_active: false`, returns 401 Unauthorized
+
+**Endpoints Using API Key Authentication:**
+- `/quickjob` - Supports both JWT and API key (API key takes precedence if both provided)
+- `/longjob` - Supports both JWT and API key (API key takes precedence if both provided)
+- `/health` - **API key only** (required via Lambda authorizer, validates `x-api-key` header)
 
 **Rate Limiting:**
 - Once `user_id` is retrieved from the user account lookup (after API key or JWT authentication), rate limiting uses `user_id` as partition key

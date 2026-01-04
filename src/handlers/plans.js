@@ -55,13 +55,13 @@ async function handler(event) {
 async function getPlanDetails(event, planId) {
   try {
     if (!planId) {
-      return NotFound('Plan ID is required');
+      return BadRequest.INVALID_PARAMETER('plan_id', 'Plan ID is required');
     }
 
     const plan = await getPlan(planId);
 
     if (!plan) {
-      return NotFound(`Plan not found: ${planId}`);
+      return NotFound.NOT_FOUND(`Plan not found: ${planId}`);
     }
 
     // Filter out internal fields if needed, or return all

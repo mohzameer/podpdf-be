@@ -168,45 +168,18 @@ async function createAccount(event) {
     try {
       body = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
     } catch (error) {
-      return {
-        statusCode: 400,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          error: {
-            code: 'INVALID_REQUEST_BODY',
-            message: 'Invalid JSON in request body',
-          },
-        }),
-      };
+      return BadRequest.INVALID_PARAMETER('body', 'Invalid JSON in request body');
     }
 
     const { user_sub, email, name, plan_id } = body;
 
     // Validate required fields
     if (!user_sub || typeof user_sub !== 'string' || !user_sub.trim()) {
-      return {
-        statusCode: 400,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          error: {
-            code: 'MISSING_USER_SUB',
-            message: 'user_sub field is required',
-          },
-        }),
-      };
+      return BadRequest.INVALID_PARAMETER('user_sub', 'user_sub field is required');
     }
 
     if (!email || typeof email !== 'string' || !email.trim()) {
-  return {
-        statusCode: 400,
-    headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          error: {
-            code: 'MISSING_EMAIL',
-            message: 'email field is required',
-          },
-        }),
-      };
+      return BadRequest.INVALID_PARAMETER('email', 'email field is required');
     }
 
     // Check if account already exists

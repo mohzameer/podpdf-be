@@ -8,6 +8,45 @@ All endpoints are served via **Amazon API Gateway HTTP API (v2)** and backed by 
 
 ---
 
+## Error Response Format
+
+All error responses follow a standardized format:
+
+```json
+{
+  "error": {
+    "code": "ERROR_CODE",
+    "message": "Human readable error message",
+    "details": {
+      // Additional error-specific details
+      // May include: parameter, action_required, limit, quota, etc.
+    }
+  }
+}
+```
+
+**Key Fields:**
+- **`code`** (string): Machine-readable error code (e.g., `INVALID_PARAMETER`, `ACCOUNT_NOT_FOUND`)
+- **`message`** (string): Human-readable error message describing what went wrong
+- **`details`** (object): Additional context-specific information:
+  - For `INVALID_PARAMETER`: Contains `parameter` and `message` fields
+  - For `QUOTA_EXCEEDED`: Contains `current_usage`, `quota`, `quota_exceeded`, `action_required`
+  - For `RATE_LIMIT_EXCEEDED`: Contains `limit`, `window`, `retry_after`, `type`
+  - For most errors: Contains `action_required` field with guidance
+
+**Common Error Codes:**
+- `INVALID_PARAMETER` - Invalid or missing request parameters (400)
+- `ACCOUNT_NOT_FOUND` - User account not found (403)
+- `QUOTA_EXCEEDED` - Usage quota exceeded (403)
+- `RATE_LIMIT_EXCEEDED` - Rate limit exceeded (403)
+- `UNAUTHORIZED` - Missing or invalid authentication (401)
+- `NOT_FOUND` - Resource not found (404)
+- `INTERNAL_SERVER_ERROR` - Server-side error (500)
+
+For detailed error code documentation, see `ERRORS.md`.
+
+---
+
 ## 1. `POST /quickjob`
 
 **Description:**  
@@ -836,12 +875,16 @@ All error responses follow the standard error format:
 
 **Error Codes:**
 
-- **`400 Bad Request`** – Missing required fields.
+- **`400 Bad Request`** – Invalid or missing parameters.
   ```json
   {
     "error": {
-      "code": "MISSING_USER_SUB",
-      "message": "user_sub field is required"
+      "code": "INVALID_PARAMETER",
+      "message": "Invalid user_sub: user_sub field is required",
+      "details": {
+        "parameter": "user_sub",
+        "message": "user_sub field is required"
+      }
     }
   }
   ```
@@ -850,8 +893,26 @@ All error responses follow the standard error format:
   ```json
   {
     "error": {
-      "code": "MISSING_EMAIL",
-      "message": "email field is required"
+      "code": "INVALID_PARAMETER",
+      "message": "Invalid email: email field is required",
+      "details": {
+        "parameter": "email",
+        "message": "email field is required"
+      }
+    }
+  }
+  ```
+
+  Or for invalid JSON:
+  ```json
+  {
+    "error": {
+      "code": "INVALID_PARAMETER",
+      "message": "Invalid body: Invalid JSON in request body",
+      "details": {
+        "parameter": "body",
+        "message": "Invalid JSON in request body"
+      }
     }
   }
   ```
@@ -874,7 +935,10 @@ All error responses follow the standard error format:
   {
     "error": {
       "code": "INTERNAL_SERVER_ERROR",
-      "message": "Internal server error"
+      "message": "An unexpected error occurred",
+      "details": {
+        "action_required": "retry_later"
+      }
     }
   }
   ```
@@ -1020,7 +1084,10 @@ Get plan details. Use `GET /plans` to list all active plans, or `GET /plans/{pla
 {
   "error": {
     "code": "NOT_FOUND",
-    "message": "Plan not found: invalid-plan-id"
+    "message": "Plan not found: invalid-plan-id",
+    "details": {
+      "action_required": "check_resource_id"
+    }
   }
 }
 ```
@@ -1030,7 +1097,10 @@ Get plan details. Use `GET /plans` to list all active plans, or `GET /plans/{pla
 {
   "error": {
     "code": "INTERNAL_SERVER_ERROR",
-    "message": "Internal server error"
+    "message": "An unexpected error occurred",
+    "details": {
+      "action_required": "retry_later"
+    }
   }
 }
 ```
@@ -1745,7 +1815,9 @@ Authorization: Bearer <jwt_token>
   "error": {
     "code": "INTERNAL_SERVER_ERROR",
     "message": "Failed to upgrade account",
-    "details": {}
+    "details": {
+      "action_required": "retry_later"
+    }
   }
 }
 ```
@@ -2138,34 +2210,111 @@ Authorization: Bearer <jwt_token>
 
 ---
 
-## 16. Health Check (Optional, Internal)
+## 16. Health Check
 
-> **Note:** This endpoint is optional and not required for the public API. It is recommended for internal monitoring.
+**Description:**  
+Health check endpoint to verify service availability and basic system status.
 
 **Method:** `GET`  
-**Path:** `/health` (could be internal-only or protected)
+**Path:** `/health`
 
-### 9.1 Purpose
+### 16.1 Authentication
 
-- Verify that the Lambda function is reachable and basic dependencies are responsive (e.g., quick check to DynamoDB).
+- **Type:** API Key (required)
+- **Header:**
+```http
+X-API-Key: <api_key>
+```
 
-### 9.2 Response (Example)
+**Requirements:**
+- API key must be valid and active (not revoked)
+- API key must exist in the `ApiKeys` DynamoDB table
+- API key format: `pk_live_...` (production) or `pk_test_...` (development)
+- **Note:** JWT tokens are not accepted for this endpoint. Only API keys are supported.
+
+### 16.2 HTTP Request
+
+**Method:** `GET`  
+**Path:** `/health`
+
+**Headers:**
+- `X-API-Key` (required): Valid API key
+
+### 16.3 HTTP Response
+
+#### 16.3.1 Success Response (200 OK)
 
 ```json
 {
   "status": "ok",
-  "uptime_ms": 123456,
-  "dependencies": {
-    "dynamodb": "ok"
+  "timestamp": "2025-12-21T10:30:00.000Z",
+  "uptime_ms": 123456
+}
+```
+
+**Fields:**
+- `status` (string): Always `"ok"` when service is healthy
+- `timestamp` (string): ISO 8601 timestamp of the health check
+- `uptime_ms` (number): Process uptime in milliseconds
+
+#### 16.3.2 Error Responses
+
+**401 Unauthorized - Missing API Key**
+```json
+{
+  "error": {
+    "code": "UNAUTHORIZED",
+    "message": "Missing or invalid authentication. Provide either JWT token or API key."
   }
 }
 ```
 
+**401 Unauthorized - Invalid API Key**
+```json
+{
+  "error": {
+    "code": "UNAUTHORIZED",
+    "message": "Missing or invalid authentication. Provide either JWT token or API key."
+  }
+}
+```
+
+**500 Internal Server Error**
+```json
+{
+  "status": "error",
+  "message": "Health check failed"
+}
+```
+
+### 16.4 Example Request
+
+```bash
+curl -X GET https://api.podpdf.com/health \
+  -H "X-API-Key: pk_live_abc123..."
+```
+
+### 16.5 Example Response
+
+```json
+{
+  "status": "ok",
+  "timestamp": "2025-12-21T10:30:00.000Z",
+  "uptime_ms": 123456
+}
+```
+
+### 16.6 Usage Notes
+
+- **Purpose:** This endpoint is used for monitoring and health checks
+- **Authentication:** Requires a valid API key (created via `POST /accounts/me/api-keys`)
+- **Rate Limiting:** Subject to the same rate limits as other authenticated endpoints
+- **Monitoring:** Can be used by monitoring systems to verify service availability
+
 **Status Codes:**
 - `200 OK` – Service healthy
+- `401 Unauthorized` – Missing or invalid API key
 - `500 Internal Server Error` – Health check failed
-
-Implementation of `/health` is left to the service owner and may be internal-only (not exposed via public API Gateway).
 
 ---
 

@@ -6,7 +6,7 @@
  */
 
 const logger = require('../utils/logger');
-const { BadRequest, InternalServerError } = require('../utils/errors');
+const { BadRequest, NotFound, InternalServerError } = require('../utils/errors');
 const { getJobRecord } = require('../services/jobTracking');
 
 /**
@@ -264,16 +264,7 @@ async function handler(event) {
         sourceIp,
         jobId,
       });
-      return {
-        statusCode: 404,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          error: {
-            code: 'JOB_NOT_FOUND',
-            message: 'Job not found',
-          },
-        }),
-      };
+      return NotFound.NOT_FOUND('Job not found');
     }
 
     // Verify job status matches (prevent replay attacks with old statuses)

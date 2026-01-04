@@ -6,7 +6,7 @@
 const { getItem, putItem, updateItem, deleteItem, query } = require('./dynamodb');
 const { getUserAccount, getPlan } = require('./business');
 const { generateULID } = require('../utils/ulid');
-const { Forbidden } = require('../utils/errors');
+const { Forbidden, BadRequest } = require('../utils/errors');
 const logger = require('../utils/logger');
 
 const WEBHOOKS_TABLE = process.env.WEBHOOKS_TABLE;
@@ -195,16 +195,7 @@ async function createWebhook(userSub, webhookData) {
     const events = webhookData.events || DEFAULT_EVENTS;
     const eventsValidation = validateEvents(events);
     if (!eventsValidation.isValid) {
-      return {
-        statusCode: 400,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          error: {
-            code: 'INVALID_EVENTS',
-            message: eventsValidation.error,
-          },
-        }),
-      };
+      return BadRequest.INVALID_PARAMETER('events', eventsValidation.error);
     }
 
     // Create webhook record
@@ -422,16 +413,7 @@ async function updateWebhook(webhookId, userSub, updates) {
     if (updates.events !== undefined) {
       const eventsValidation = validateEvents(updates.events);
       if (!eventsValidation.isValid) {
-        return {
-          statusCode: 400,
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            error: {
-              code: 'INVALID_EVENTS',
-              message: eventsValidation.error,
-            },
-          }),
-        };
+        return BadRequest.INVALID_PARAMETER('events', eventsValidation.error);
       }
       updateExpressions.push('events = :events');
       expressionAttributeValues[':events'] = updates.events;

@@ -32,7 +32,9 @@ For production or if you want least-privilege access, use this custom policy tha
       "Sid": "CloudFormationAccess",
       "Effect": "Allow",
       "Action": [
-        "cloudformation:*"
+        "cloudformation:*",
+        "cloudformation:DescribeStackResource",
+        "cloudformation:DescribeStackResources"
       ],
       "Resource": "*"
     },
@@ -176,6 +178,20 @@ For production or if you want least-privilege access, use this custom policy tha
         "route53:GetChange"
       ],
       "Resource": "*"
+    },
+    {
+      "Sid": "SSMAccess",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:PutParameter",
+        "ssm:GetParameter",
+        "ssm:GetParameters",
+        "ssm:DeleteParameter",
+        "ssm:DescribeParameters"
+      ],
+      "Resource": [
+        "arn:aws:ssm:eu-central-1:*:parameter/podpdf/*"
+      ]
     }
   ]
 }
@@ -254,6 +270,11 @@ For production or if you want least-privilege access, use this custom policy tha
 - **Why:** Create DNS records for custom domains (if createRoute53Record is true)
 - **Needed for:** Custom domain DNS configuration
 
+### SSM Parameter Store (`ssm:*` for parameters)
+- **Why:** Store and retrieve API keys for health endpoint authorization
+- **Needed for:** Creating/updating/deleting SSM parameters for API key management
+- **Note:** Lambda functions automatically get permissions to read SSM parameters via IAM role, but deployment user needs permissions to create/manage parameters
+
 ---
 
 ## More Restrictive Policy (Advanced - Optional)
@@ -273,13 +294,36 @@ If you want even more restrictive permissions, you can limit resources by stage/
         "cloudformation:DeleteStack",
         "cloudformation:DescribeStacks",
         "cloudformation:DescribeStackEvents",
+        "cloudformation:DescribeStackResource",
         "cloudformation:DescribeStackResources",
         "cloudformation:GetTemplate",
-        "cloudformation:ValidateTemplate",
         "cloudformation:ListStackResources"
       ],
       "Resource": [
         "arn:aws:cloudformation:eu-central-1:*:stack/podpdf-*/*"
+      ]
+    },
+    {
+      "Sid": "CloudFormationValidateTemplate",
+      "Effect": "Allow",
+      "Action": [
+        "cloudformation:ValidateTemplate"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "CloudFormationChangeSetAccess",
+      "Effect": "Allow",
+      "Action": [
+        "cloudformation:CreateChangeSet",
+        "cloudformation:DeleteChangeSet",
+        "cloudformation:DescribeChangeSet",
+        "cloudformation:ExecuteChangeSet",
+        "cloudformation:ListChangeSets"
+      ],
+      "Resource": [
+        "arn:aws:cloudformation:eu-central-1:*:stack/podpdf-*/*",
+        "arn:aws:cloudformation:eu-central-1:*:changeSet/*"
       ]
     },
     {
@@ -351,7 +395,6 @@ If you want even more restrictive permissions, you can limit resources by stage/
         "cognito-idp:CreateUserPool",
         "cognito-idp:UpdateUserPool",
         "cognito-idp:DeleteUserPool",
-        "cognito-idp:DescribeUserPool",
         "cognito-idp:ListUserPools",
         "cognito-idp:CreateUserPoolClient",
         "cognito-idp:UpdateUserPoolClient",
@@ -362,6 +405,14 @@ If you want even more restrictive permissions, you can limit resources by stage/
       "Resource": [
         "arn:aws:cognito-idp:eu-central-1:*:userpool/podpdf-*"
       ]
+    },
+    {
+      "Sid": "CognitoDescribeAccess",
+      "Effect": "Allow",
+      "Action": [
+        "cognito-idp:DescribeUserPool"
+      ],
+      "Resource": "*"
     },
     {
       "Sid": "APIGatewayReadAccessGlobal",
@@ -385,16 +436,25 @@ If you want even more restrictive permissions, you can limit resources by stage/
       ]
     },
     {
+      "Sid": "CloudWatchLogsDescribeLogGroups",
+      "Effect": "Allow",
+      "Action": [
+        "logs:DescribeLogGroups"
+      ],
+      "Resource": "*"
+    },
+    {
       "Sid": "CloudWatchLogsAccess",
       "Effect": "Allow",
       "Action": [
         "logs:CreateLogGroup",
         "logs:DeleteLogGroup",
-        "logs:DescribeLogGroups",
-        "logs:PutRetentionPolicy"
+        "logs:PutRetentionPolicy",
+        "logs:TagResource"
       ],
       "Resource": [
-        "arn:aws:logs:eu-central-1:*:log-group:/aws/lambda/podpdf-*"
+        "arn:aws:logs:eu-central-1:*:log-group:/aws/lambda/podpdf-*",
+        "arn:aws:logs:eu-central-1:*:log-group:/aws/apigateway/podpdf-*"
       ]
     },
     {
@@ -469,6 +529,20 @@ If you want even more restrictive permissions, you can limit resources by stage/
         "route53:GetChange"
       ],
       "Resource": "*"
+    },
+    {
+      "Sid": "SSMAccess",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:PutParameter",
+        "ssm:GetParameter",
+        "ssm:GetParameters",
+        "ssm:DeleteParameter",
+        "ssm:DescribeParameters"
+      ],
+      "Resource": [
+        "arn:aws:ssm:eu-central-1:*:parameter/podpdf/*"
+      ]
     }
   ]
 }
@@ -508,6 +582,24 @@ If you get permission errors, check which service is failing and ensure the poli
 
 ### "AccessDenied: User is not authorized to perform: s3:PutObject"
 - **Fix:** Add S3 permissions for deployment bucket
+
+### "AccessDenied: User is not authorized to perform: cloudformation:DescribeStackResource"
+- **Fix:** The main policy includes `cloudformation:*` which covers this. If using the restrictive policy, ensure `cloudformation:DescribeStackResource` is explicitly listed. This permission is needed for Serverless Framework to check stack resource status.
+
+### "AccessDenied: User is not authorized to perform: cloudformation:ValidateTemplate"
+- **Fix:** The main policy includes `cloudformation:*` which covers this. If using the restrictive policy, ensure `cloudformation:ValidateTemplate` is included with `Resource: "*"` (ValidateTemplate doesn't operate on a specific stack resource). This permission is needed for Serverless Framework to validate CloudFormation templates before deployment.
+
+### "AccessDenied: User is not authorized to perform: cloudformation:DeleteChangeSet"
+- **Fix:** The main policy includes `cloudformation:*` which covers this. If using the restrictive policy, ensure CloudFormation change set permissions are included (`CreateChangeSet`, `DeleteChangeSet`, `DescribeChangeSet`, `ExecuteChangeSet`, `ListChangeSets`). These permissions are needed for Serverless Framework to manage CloudFormation change sets during deployment.
+
+### "AccessDenied: User is not authorized to perform: cognito-idp:DescribeUserPool"
+- **Fix:** The main policy includes `cognito-idp:*` which covers this. If using the restrictive policy, ensure `cognito-idp:DescribeUserPool` is included with `Resource: "*"` (CloudFormation needs to describe user pools to retrieve ARNs, and the user pool ID may not match the `podpdf-*` pattern). This permission is needed for Serverless Framework to configure Lambda permissions for Cognito triggers.
+
+### "Access denied for operation 'logs:DescribeLogGroups'"
+- **Fix:** The main policy includes `logs:*` which covers this. If using the restrictive policy, ensure `logs:DescribeLogGroups` is included with `Resource: "*"` (DescribeLogGroups is a list operation that searches across all log groups). This permission is needed for Serverless Framework to retrieve HTTP API log group ARNs when configuring API Gateway stages. The updated restrictive policy includes a separate statement for `logs:DescribeLogGroups` with `Resource: "*"`.
+
+### "User is not authorized to perform CreateLogGroup with Tags. An additional permission 'logs:TagResource' is required"
+- **Fix:** The main policy includes `logs:*` which covers this. If using the restrictive policy, ensure `logs:TagResource` is included in the CloudWatchLogsAccess statement. This permission is needed when Serverless Framework creates log groups with tags (which is the default behavior). The updated restrictive policy includes `logs:TagResource` in the CloudWatchLogsAccess statement.
 
 ---
 

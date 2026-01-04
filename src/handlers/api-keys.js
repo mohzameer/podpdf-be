@@ -90,7 +90,7 @@ async function createApiKey(event, userId) {
     try {
       body = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
     } catch (error) {
-      return BadRequest('Invalid JSON in request body');
+      return BadRequest.INVALID_PARAMETER('body', 'Invalid JSON in request body');
     }
 
     const { name } = body || {};
@@ -217,14 +217,14 @@ async function revokeApiKey(event, userId, apiKeyId) {
     );
 
     if (!apiKeys || apiKeys.length === 0) {
-      return NotFound('API key not found');
+      return NotFound.NOT_FOUND('API key not found');
     }
 
     const apiKeyRecord = apiKeys[0];
 
     // Verify the API key belongs to the authenticated user
     if (apiKeyRecord.user_id !== userId) {
-      return Forbidden('API key does not belong to authenticated user');
+      return Forbidden.ACCESS_DENIED('API key does not belong to authenticated user');
     }
 
     // Revoke the API key (use api_key as the primary key for update)

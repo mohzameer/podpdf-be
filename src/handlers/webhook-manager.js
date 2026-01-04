@@ -5,7 +5,7 @@
 
 const logger = require('../utils/logger');
 const { extractUserSub } = require('../middleware/auth');
-const { Unauthorized, Forbidden, InternalServerError, BadRequest } = require('../utils/errors');
+const { Unauthorized, Forbidden, NotFound, InternalServerError, BadRequest } = require('../utils/errors');
 const {
   createWebhook,
   getWebhook,
@@ -50,11 +50,7 @@ async function handler(event) {
       return await deleteWebhookHandler(event, userSub, pathParameters.webhook_id);
     }
 
-    return {
-      statusCode: 404,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ error: 'Not found' }),
-    };
+    return NotFound.NOT_FOUND();
   } catch (error) {
     logger.error('Webhook manager handler error', {
       error: error.message,

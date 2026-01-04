@@ -29,24 +29,24 @@ async function handler(event) {
       body = JSON.parse(event.body || '{}');
     } catch (error) {
       logger.warn('Invalid JSON in request body', { error: error.message });
-      return BadRequest('Invalid JSON in request body');
+      return BadRequest.INVALID_PARAMETER('body', 'Invalid JSON in request body');
     }
 
     const { email, confirmationCode } = body;
 
     // Validate input
     if (!email || !confirmationCode) {
-      return BadRequest('Missing required fields: email and confirmationCode');
+      return BadRequest.INVALID_PARAMETER('email/confirmationCode', 'Missing required fields');
     }
 
     if (typeof email !== 'string' || typeof confirmationCode !== 'string') {
-      return BadRequest('email and confirmationCode must be strings');
+      return BadRequest.INVALID_PARAMETER('email/confirmationCode', 'email and confirmationCode must be strings');
     }
 
     // Validate email format (basic check)
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(email)) {
-      return BadRequest('Invalid email format');
+      return BadRequest.INVALID_PARAMETER('email', 'Invalid email format');
     }
 
     logger.info('Confirm signup attempt', { email });
@@ -82,13 +82,13 @@ async function handler(event) {
 
       // Handle specific Cognito errors
       if (error.name === 'CodeMismatchException') {
-        return BadRequest('Invalid verification code. Please check your email and try again.');
+        return BadRequest.INVALID_PARAMETER('confirmationCode', 'Invalid verification code. Please check your email and try again.');
       } else if (error.name === 'ExpiredCodeException') {
-        return BadRequest('Verification code has expired. Please request a new code.');
+        return BadRequest.INVALID_PARAMETER('confirmationCode', 'Verification code has expired. Please request a new code.');
       } else if (error.name === 'NotAuthorizedException') {
-        return BadRequest('User is already confirmed or does not exist.');
+        return BadRequest.INVALID_PARAMETER('email', 'User is already confirmed or does not exist.');
       } else if (error.name === 'UserNotFoundException') {
-        return BadRequest('User not found. Please sign up first.');
+        return BadRequest.INVALID_PARAMETER('email', 'User not found. Please sign up first.');
       } else if (error.name === 'TooManyRequestsException') {
         return {
           statusCode: 429,
@@ -103,14 +103,14 @@ async function handler(event) {
       }
 
       // Generic error
-      return InternalServerError('Confirmation failed. Please try again later.');
+      return InternalServerError.GENERIC('Confirmation failed. Please try again later.');
     }
   } catch (error) {
     logger.error('Unexpected error in confirm signup handler', {
       error: error.message,
       stack: error.stack,
     });
-    return InternalServerError('An unexpected error occurred');
+    return InternalServerError.GENERIC('An unexpected error occurred');
   }
 }
 

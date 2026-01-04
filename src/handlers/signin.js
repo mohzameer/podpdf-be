@@ -26,18 +26,18 @@ async function handler(event) {
       body = JSON.parse(event.body || '{}');
     } catch (error) {
       logger.warn('Invalid JSON in request body', { error: error.message });
-      return BadRequest('Invalid JSON in request body');
+      return BadRequest.INVALID_PARAMETER('body', 'Invalid JSON in request body');
     }
 
     const { email, password } = body;
 
     // Validate input
     if (!email || !password) {
-      return BadRequest('Missing required fields: email and password');
+      return BadRequest.INVALID_PARAMETER('email/password', 'Missing required fields');
     }
 
     if (typeof email !== 'string' || typeof password !== 'string') {
-      return BadRequest('email and password must be strings');
+      return BadRequest.INVALID_PARAMETER('email/password', 'email and password must be strings');
     }
 
     logger.info('Sign-in attempt', { email });
@@ -78,7 +78,7 @@ async function handler(event) {
         };
       } else {
         logger.warn('Sign-in failed: No authentication result', { email });
-        return Unauthorized('Invalid email or password');
+        return Unauthorized.INVALID_TOKEN();
       }
     } catch (error) {
       logger.error('Cognito authentication error', {
@@ -89,11 +89,11 @@ async function handler(event) {
 
       // Handle specific Cognito errors
       if (error.name === 'NotAuthorizedException') {
-        return Unauthorized('Invalid email or password');
+        return Unauthorized.INVALID_TOKEN();
       } else if (error.name === 'UserNotConfirmedException') {
-        return BadRequest('User account is not confirmed. Please verify your email address.');
+        return BadRequest.INVALID_PARAMETER('email', 'User account is not confirmed. Please verify your email address.');
       } else if (error.name === 'UserNotFoundException') {
-        return Unauthorized('Invalid email or password');
+        return Unauthorized.INVALID_TOKEN();
       } else if (error.name === 'TooManyRequestsException') {
         return {
           statusCode: 429,
@@ -108,14 +108,14 @@ async function handler(event) {
       }
 
       // Generic error
-      return InternalServerError('Authentication failed. Please try again later.');
+      return InternalServerError.GENERIC('Authentication failed. Please try again later.');
     }
   } catch (error) {
     logger.error('Unexpected error in sign-in handler', {
       error: error.message,
       stack: error.stack,
     });
-    return InternalServerError('An unexpected error occurred');
+    return InternalServerError.GENERIC('An unexpected error occurred');
   }
 }
 

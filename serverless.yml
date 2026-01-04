@@ -9,7 +9,7 @@ provider:
   name: aws
   runtime: nodejs20.x
   stage: ${opt:stage, 'dev'}
-  region: ${opt:region, 'eu-central-1'}
+  region: eu-central-1
   memorySize: 1024
   # Default timeout for lightweight HTTP handlers (jobs, accounts, health)
   timeout: 10
@@ -55,6 +55,7 @@ provider:
         - Content-Type
         - Authorization
         - X-API-Key
+        - X-Secure-Key
         - X-PDF-Pages
         - X-PDF-Truncated
         - X-Job-Id
@@ -132,6 +133,12 @@ provider:
             - sqs:GetQueueAttributes
           Resource:
             - !GetAtt LongJobQueue.Arn
+        - Effect: Allow
+          Action:
+            - ssm:GetParameter
+            - ssm:GetParameters
+          Resource:
+            - arn:aws:ssm:${self:provider.region}:*:parameter/podpdf/${self:provider.stage}/health/api-key
 
 functions:
   quickjob:
@@ -195,11 +202,11 @@ functions:
       - httpApi:
           path: /plans
           method: get
-          # No authorizer - public endpoint for viewing plans
+          authorizer: cognitoAuthorizer
       - httpApi:
           path: /plans/{plan_id}
           method: get
-          # No authorizer - public endpoint for viewing plan details
+          authorizer: cognitoAuthorizer
     environment:
       PLANS_TABLE: ${self:custom.tableNames.${self:provider.stage}.plans}
   
@@ -298,12 +305,19 @@ functions:
           method: post
           authorizer: null  # No authorizer - uses payload validation for security
   
+  api-key-authorizer:
+    handler: src/handlers/api-key-authorizer.handler
+    timeout: 5
+    environment:
+      HEALTH_API_KEY_SSM_PARAMETER: /podpdf/${self:provider.stage}/health/api-key
+  
   health:
     handler: src/handlers/health.handler
     events:
       - httpApi:
           path: /health
           method: get
+          authorizer: null  # Public endpoint
   
   signup:
     handler: src/handlers/signup.handler
@@ -340,14 +354,19 @@ functions:
 
 custom:
   customDomain:
+    enabled: ${self:custom.domainEnabled.${self:provider.stage}}
     domainName: api.podpdf.com
     basePath: ''
-    stage: prod
+    stage: $default
     endpointType: regional
     securityPolicy: tls_1_2
     apiType: http
     certificateArn: arn:aws:acm:eu-central-1:637423622157:certificate/3ca50ff6-5010-4381-a8ac-e1f97abf7a49
     createRoute53Record: false
+    
+  domainEnabled:
+    dev: false
+    prod: true   
   
   stages:
     dev:

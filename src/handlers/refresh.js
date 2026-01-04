@@ -26,18 +26,18 @@ async function handler(event) {
       body = JSON.parse(event.body || '{}');
     } catch (error) {
       logger.warn('Invalid JSON in request body', { error: error.message });
-      return BadRequest('Invalid JSON in request body');
+      return BadRequest.INVALID_PARAMETER('body', 'Invalid JSON in request body');
     }
 
     const { refreshToken } = body;
 
     // Validate input
     if (!refreshToken) {
-      return BadRequest('Missing required field: refreshToken');
+      return BadRequest.INVALID_PARAMETER('refreshToken', 'Missing required field');
     }
 
     if (typeof refreshToken !== 'string') {
-      return BadRequest('refreshToken must be a string');
+      return BadRequest.INVALID_PARAMETER('refreshToken', 'refreshToken must be a string');
     }
 
     logger.info('Refresh token attempt');
@@ -76,7 +76,7 @@ async function handler(event) {
         };
       } else {
         logger.warn('Token refresh failed: No authentication result');
-        return Unauthorized('Invalid refresh token');
+        return Unauthorized.INVALID_TOKEN();
       }
     } catch (error) {
       logger.error('Cognito token refresh error', {
@@ -86,7 +86,7 @@ async function handler(event) {
 
       // Handle specific Cognito errors
       if (error.name === 'NotAuthorizedException') {
-        return Unauthorized('Invalid or expired refresh token');
+        return Unauthorized.INVALID_TOKEN();
       } else if (error.name === 'TooManyRequestsException') {
         return {
           statusCode: 429,
@@ -101,14 +101,14 @@ async function handler(event) {
       }
 
       // Generic error
-      return InternalServerError('Token refresh failed. Please try again later.');
+      return InternalServerError.GENERIC('Token refresh failed. Please try again later.');
     }
   } catch (error) {
     logger.error('Unexpected error in refresh token handler', {
       error: error.message,
       stack: error.stack,
     });
-    return InternalServerError('An unexpected error occurred');
+    return InternalServerError.GENERIC('An unexpected error occurred');
   }
 }
 

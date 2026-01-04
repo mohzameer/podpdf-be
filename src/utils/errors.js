@@ -291,6 +291,27 @@ const Forbidden = {
       'Webhook does not belong to authenticated user',
       { action_required: 'use_correct_webhook_id' }
     ),
+
+  ACCESS_DENIED: (message = 'Access denied') =>
+    createErrorResponse(
+      403,
+      'ACCESS_DENIED',
+      message,
+      { action_required: 'check_resource_ownership' }
+    ),
+};
+
+/**
+ * Not Found (404) errors
+ */
+const NotFound = {
+  NOT_FOUND: (message = 'Resource not found') =>
+    createErrorResponse(
+      404,
+      'NOT_FOUND',
+      message,
+      { action_required: 'check_resource_id' }
+    ),
 };
 
 /**
@@ -314,8 +335,13 @@ const RequestTimeout = {
  * Internal Server Error (500)
  */
 const InternalServerError = {
-  GENERIC: (message = 'Internal server error') =>
-    createErrorResponse(500, 'INTERNAL_SERVER_ERROR', message, {}),
+  GENERIC: (message = 'An unexpected error occurred') =>
+    createErrorResponse(
+      500,
+      'INTERNAL_SERVER_ERROR',
+      message,
+      { action_required: 'retry_later' }
+    ),
 
   PDF_GENERATION_FAILED: (errorMessage) =>
     createErrorResponse(
@@ -331,6 +357,7 @@ module.exports = {
   BadRequest,
   Unauthorized,
   Forbidden,
+  NotFound,
   RequestTimeout,
   InternalServerError,
 };
