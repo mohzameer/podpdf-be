@@ -60,6 +60,18 @@ For production or if you want least-privilege access, use this custom policy tha
       "Resource": "*"
     },
     {
+      "Sid": "LambdaEventSourceMappingAccess",
+      "Effect": "Allow",
+      "Action": [
+        "lambda:CreateEventSourceMapping",
+        "lambda:UpdateEventSourceMapping",
+        "lambda:DeleteEventSourceMapping",
+        "lambda:GetEventSourceMapping",
+        "lambda:ListEventSourceMappings"
+      ],
+      "Resource": "*"
+    },
+    {
       "Sid": "APIGatewayReadAccessGlobal",
       "Effect": "Allow",
       "Action": [
@@ -253,6 +265,13 @@ For production or if you want least-privilege access, use this custom policy tha
 - **Why:** Create log groups and monitor resources
 - **Needed for:** Lambda logs, CloudWatch metrics, alarms
 
+### SQS (`sqs:*` for queues)
+- **Why:** Create and manage SQS queues for async processing
+- **Needed for:** Creating queues (longjob queue, credit deduction FIFO queue), configuring queue attributes, managing event source mappings
+
+### Lambda Event Source Mappings (`lambda:CreateEventSourceMapping`, etc.)
+- **Why:** Connect SQS queues to Lambda functions for event-driven processing
+- **Needed for:** Creating event source mappings between SQS FIFO queue and credit deduction processor Lambda, updating/deleting mappings
 
 ### S3 (`s3:*` for deployment buckets)
 - **Why:** Serverless Framework stores deployment artifacts in S3
@@ -351,6 +370,18 @@ If you want even more restrictive permissions, you can limit resources by stage/
       "Resource": [
         "arn:aws:lambda:eu-central-1:*:function:podpdf-*"
       ]
+    },
+    {
+      "Sid": "LambdaEventSourceMappingAccess",
+      "Effect": "Allow",
+      "Action": [
+        "lambda:CreateEventSourceMapping",
+        "lambda:UpdateEventSourceMapping",
+        "lambda:DeleteEventSourceMapping",
+        "lambda:GetEventSourceMapping",
+        "lambda:ListEventSourceMappings"
+      ],
+      "Resource": "*"
     },
     {
       "Sid": "IAMRoleAccess",
@@ -600,6 +631,9 @@ If you get permission errors, check which service is failing and ensure the poli
 
 ### "User is not authorized to perform CreateLogGroup with Tags. An additional permission 'logs:TagResource' is required"
 - **Fix:** The main policy includes `logs:*` which covers this. If using the restrictive policy, ensure `logs:TagResource` is included in the CloudWatchLogsAccess statement. This permission is needed when Serverless Framework creates log groups with tags (which is the default behavior). The updated restrictive policy includes `logs:TagResource` in the CloudWatchLogsAccess statement.
+
+### "User is not authorized to perform: lambda:CreateEventSourceMapping"
+- **Fix:** Add Lambda event source mapping permissions. The main policy includes `lambda:*` which covers this, but if using the restrictive policy, ensure `lambda:CreateEventSourceMapping`, `lambda:UpdateEventSourceMapping`, `lambda:DeleteEventSourceMapping`, `lambda:GetEventSourceMapping`, and `lambda:ListEventSourceMappings` are included. These permissions are needed for Serverless Framework to create event source mappings between SQS queues and Lambda functions (e.g., credit deduction queue → credit deduction processor Lambda). The updated policies include a separate statement for Lambda event source mapping permissions.
 
 ---
 

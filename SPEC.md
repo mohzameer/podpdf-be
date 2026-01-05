@@ -117,9 +117,17 @@ Client → API Gateway → Lambda (longjob) → SQS Queue
    - **Runtime:** Node.js 20.x
    - **Memory:** 10,240 MB (maximum for fastest CPU)
    - **Timeout:** 900 seconds (15 minutes)
-   - **Trigger:** SQS queue
+   - **Trigger:** SQS queue (longjob-queue)
    - **Layer:** `@sparticuz/chromium`
-   - **Purpose:** Processes queued jobs, generates PDF, uploads to S3, calls webhook
+   - **Purpose:** Processes queued jobs, generates PDF, uploads to S3, calls webhook, queues credit deduction
+
+4. **credit-deduction-processor** - Process credit deductions
+   - **Runtime:** Node.js 20.x
+   - **Memory:** 1024 MB (minimal, just processes deductions)
+   - **Timeout:** 60 seconds
+   - **Trigger:** SQS FIFO queue (credit-deduction-queue.fifo)
+   - **Batch Size:** 1 (processes one message at a time for reliability)
+   - **Purpose:** Atomically deducts credits from Users table and increments total_pdf_count. Handles both free credits (consumes first) and prepaid credits. Ensures idempotency using job_id.
 
 ### Amazon Cognito
 
@@ -146,8 +154,10 @@ Client → API Gateway → Lambda (longjob) → SQS Queue
      - `display_name` (String, optional) - User's display name
      - `plan_id` (String) - ID of the plan this user is on (e.g., `"free-basic"`, `"paid-standard"`)
      - `account_status` (String) - `"free"`, `"paid"`, or `"cancelled"` (defaults to `"free"` on account creation)
-     - `total_pdf_count` (Number) - All-time PDF count for the user
-     - `free_credits_remaining` (Number, optional) - Remaining free PDF credits for this user. Decremented when free credits are used. Can go negative (e.g., `-1`, `-2`) due to concurrent requests. Defaults to `null` if plan has no free credits. Initialized from `plan.free_credits` when user upgrades to a plan with free credits.
+     - `total_pdf_count` (Number) - All-time PDF count for the user. Updated atomically by credit deduction processor (single source of truth).
+     - `credits_balance` (Number, optional) - Prepaid credit balance in USD. Defaults to `0` if not set. Deducted when PDFs are generated (after free credits are exhausted).
+     - `credits_last_updated_at` (String, optional) - ISO 8601 timestamp when credits_balance was last updated.
+     - `free_credits_remaining` (Number, optional) - Remaining free PDF credits for this user. Decremented when free credits are used. Can go negative (e.g., `-1`, `-2`) due to concurrent requests. Defaults to `null` if plan has no free credits. Initialized from `plan.free_credits` when user upgrades to a plan with free credits. Free credits are consumed before prepaid credits.
      - `quota_exceeded` (Boolean) - `true` if free tier user has exceeded their plan's quota limit (from `plan.monthly_quota`), `false` otherwise (defaults to `false`)
      - `webhook_url` (String, optional) - User's default webhook URL for long job notifications (legacy, kept for backward compatibility)
      - **Note:** The new multiple webhooks system (Phase 1) is now available. Users can configure multiple webhooks via `/accounts/me/webhooks` endpoints. The legacy `webhook_url` field is still supported for backward compatibility.
@@ -181,7 +191,7 @@ Client → API Gateway → Lambda (longjob) → SQS Queue
      - `s3_key` (String, optional) - S3 object key for long jobs (only for long jobs)
      - `s3_url` (String, optional) - Signed URL for S3 object (1-hour expiry, only for long jobs)
      - `s3_url_expires_at` (String, optional) - ISO 8601 timestamp when signed URL expires (only for long jobs)
-     - `webhook_url` (String, optional) - Legacy webhook URL used for this job (user default or override, only for long jobs, kept for backward compatibility)
+     - `webhook_url` (String, optional) - Legacy field, no longer used. Webhooks are delivered via the webhook management system. Kept for backward compatibility only.
      - `webhook_ids` (Array of Strings, optional) - List of webhook IDs that were called for this job (new multiple webhooks system)
      - `webhook_delivered` (Boolean, optional) - Whether at least one webhook was successfully delivered
      - `webhook_delivered_at` (String, optional) - ISO 8601 timestamp when first webhook was successfully delivered
@@ -243,25 +253,32 @@ Client → API Gateway → Lambda (longjob) → SQS Queue
    - **TTL:** Not applicable (API keys are long-lived until revoked)
    - **Note:** API keys are stored in plaintext as the partition key for fast lookups. The key format should be prefixed (e.g., `pk_live_` or `pk_test_`) for identification. `user_id` is used for rate limiting and quota checks for consistency across all tables. `api_key_id` is a ULID used to reference API keys in job records for auditing which API key was used for each job.
 
-7. **Bills**
-   - **Partition Key:** `user_id` (String, ULID) - User identifier
-   - **Sort Key:** `billing_month` (String) - Billing month in `YYYY-MM` format (e.g., `"2025-12"`)
+7. **CreditTransactions**
+   - **Partition Key:** `transaction_id` (String, ULID) - Unique transaction identifier
+   - **Global Secondary Indexes:**
+     - `UserIdIndex` on `user_id` (for querying all transactions for a user)
+     - `JobIdIndex` on `job_id` (for idempotency checks - prevents duplicate processing)
    - **Attributes:**
-     - `user_id` (String, ULID) - User identifier (partition key)
-     - `billing_month` (String) - Billing month in `YYYY-MM` format (sort key)
-    - `monthly_pdf_count` (Number) - Number of PDFs generated in this month
-    - `monthly_billing_amount` (Number) - Total amount accumulated for this month in USD
-    - `is_paid` (Boolean) - Whether the bill has been paid (defaults to `false`)
-    - `is_active` (Boolean) - Whether this bill is for the current month (`true`) or a previous month (`false`). Bills are marked as inactive when a new month begins. All bill history is preserved in the same table.
-    - `bill_id` (String, optional) - External bill/invoice ID (for future integration with payment processors like Paddle)
-     - `invoice_id` (String, optional) - Invoice ID from payment processor
-     - `paddle_subscription_id` (String, optional) - Paddle subscription ID (for future integration)
-     - `paddle_transaction_id` (String, optional) - Paddle transaction ID (for future integration)
-     - `paid_at` (String, optional) - ISO 8601 timestamp when bill was marked as paid
-     - `created_at` (String, ISO 8601 timestamp) - Bill record creation timestamp
-     - `updated_at` (String, ISO 8601 timestamp) - Last update timestamp
-   - **Global Secondary Index:** `UserIdBillingMonthIndex` on `user_id` and `billing_month` (for lookups by user_id)
-   - **TTL:** Not applicable (bills are permanent records for invoicing and accounting)
+     - `transaction_id` (String, ULID) - Unique transaction identifier (partition key)
+     - `user_id` (String, ULID) - User identifier (reference to Users table)
+     - `job_id` (String, UUID) - Job identifier (reference to JobDetails table, used for idempotency)
+     - `amount` (Number) - Transaction amount:
+       - Negative for deductions (e.g., `-0.01` for a $0.01 deduction)
+       - Positive for purchases (e.g., `10.00` for a $10 credit purchase)
+       - `0` if free credits were consumed (no prepaid credits deducted)
+     - `transaction_type` (String) - `"deduction"` or `"purchase"`
+     - `status` (String) - `"completed"` or `"failed"`
+     - `used_free_credits` (Boolean, optional) - `true` if free credits were consumed for this transaction
+     - `error_message` (String, optional) - Error message if status is `"failed"`
+     - `created_at` (String, ISO 8601 timestamp) - Transaction creation timestamp (when PDF was generated)
+     - `processed_at` (String, ISO 8601 timestamp) - Transaction processing timestamp (when credit was deducted)
+   - **TTL:** Not applicable (permanent audit trail for all credit transactions)
+   - **Purpose:** Complete audit trail of all credit purchases and deductions. Enables reconciliation, debugging, and credit purchase history queries.
+
+8. **Bills** ⚠️ **DEPRECATED**
+   - **Status:** This table is deprecated and no longer updated. Kept for historical records only.
+   - **Note:** The system has migrated to a credit-based billing model. All new billing is handled via `CreditTransactions` table and `Users.credits_balance`.
+   - **Historical Data:** Existing bill records are preserved for backward compatibility and historical reference.
 
 ### Amazon S3
 
@@ -276,23 +293,35 @@ Client → API Gateway → Lambda (longjob) → SQS Queue
 
 ### Amazon SQS
 
-**Purpose:** Queue long job processing requests
+**Purpose:** Queue processing requests for long jobs and credit deductions
 
-**Configuration:**
-- **Queue Name:** `podpdf-{stage}-longjob-queue`
-- **Type:** Standard queue
-- **Visibility Timeout:** 900 seconds (15 minutes)
-- **Message Retention:** 14 days
-- **Dead-Letter Queue:** Optional, for failed processing after max retries
+**Queues:**
 
-**Deduplication Strategy:**
-- Standard SQS queues provide at-least-once delivery (messages may be delivered multiple times)
-- Deduplication is handled via DynamoDB `JobDetails` table:
-  - Before processing a message, `longjob-processor` checks if job already exists in `JobDetails`
-  - If job exists with status `"completed"` or `"processing"`, message is skipped (duplicate)
-  - If job doesn't exist or status is `"queued"`, processing proceeds
-  - Uses conditional updates to atomically transition status from `"queued"` to `"processing"` to prevent race conditions
-  - This ensures idempotent processing even with duplicate SQS message deliveries
+1. **LongJob Queue**
+   - **Queue Name:** `podpdf-{stage}-longjob-queue`
+   - **Type:** Standard queue
+   - **Visibility Timeout:** 900 seconds (15 minutes)
+   - **Message Retention:** 14 days
+   - **Dead-Letter Queue:** Optional, for failed processing after max retries
+   - **Deduplication Strategy:**
+     - Standard SQS queues provide at-least-once delivery (messages may be delivered multiple times)
+     - Deduplication is handled via DynamoDB `JobDetails` table:
+       - Before processing a message, `longjob-processor` checks if job already exists in `JobDetails`
+       - If job exists with status `"completed"` or `"processing"`, message is skipped (duplicate)
+       - If job doesn't exist or status is `"queued"`, processing proceeds
+       - Uses conditional updates to atomically transition status from `"queued"` to `"processing"` to prevent race conditions
+       - This ensures idempotent processing even with duplicate SQS message deliveries
+
+2. **Credit Deduction Queue**
+   - **Queue Name:** `podpdf-{stage}-credit-deduction-queue.fifo`
+   - **Type:** FIFO queue
+   - **Visibility Timeout:** 60 seconds
+   - **Message Retention:** 14 days
+   - **Dead-Letter Queue:** Configured for failed credit deductions after max retries
+   - **Deduplication:**
+     - Uses `MessageDeduplicationId` set to `job_id` (prevents duplicate messages for same job)
+     - Uses `MessageGroupId` set to `user_id` (ensures sequential processing per user)
+   - **Purpose:** Reliable, sequential credit deduction processing. Ensures credits are deducted exactly once per PDF, even under high concurrency (10,000+ concurrent operations).
 
 ### Amazon CloudWatch
 
@@ -367,6 +396,8 @@ Client → API Gateway → Lambda (longjob) → SQS Queue
      - Rate limit check is a direct DynamoDB lookup using `user_id` as partition key
      - `user_id` is already available from the user account lookup (required for quota checks, billing, etc.)
    - Checks all-time quota for free tier users (quota limit from `plan.monthly_quota` in `Plans` table)
+   - **For paid plans:** Checks if user has sufficient credits (`credits_balance >= price_per_pdf` or `free_credits_remaining > 0`)
+   - If insufficient credits, rejects with 403 `INSUFFICIENT_CREDITS` error
    - Validates input size limits (~5 MB maximum)
 
    **Processing Phase (if checks pass):**
@@ -387,6 +418,12 @@ Client → API Gateway → Lambda (longjob) → SQS Queue
    - Records job completion (on both success and failure):
      - Writes to `JobDetails` table: user info, job status, mode, pages, `truncated` flag, timestamps, `job_type: "quick"`, error message (if failure), `timeout_occurred` (if timeout)
      - Writes to `Analytics` table: country, job duration, mode, pages, status, `job_type: "quick"`, `timeout_occurred` (if timeout)
+   - **Credit Deduction (after successful PDF generation):**
+     - For all users (paid and free): Queues credit deduction message to SQS FIFO queue
+     - For free plans: Amount = 0 (no credit deduction, but still increments PDF count)
+     - For paid plans: Amount = costPerPdf (deducts credits and increments PDF count)
+     - Credit deduction is processed asynchronously by `credit-deduction-processor` Lambda
+     - This ensures `total_pdf_count` is always updated in one reliable place (credit processor)
    - On success: Returns the PDF binary directly in the response (truncated if necessary)
    - On failure: Returns appropriate error response
 
@@ -410,7 +447,7 @@ Client → API Gateway → Lambda (longjob) → SQS Queue
      - `html` (string, optional): HTML content (required if `input_type` is `"html"`)
      - `markdown` (string, optional): Markdown content (required if `input_type` is `"markdown"`)
      - `options` (object, optional): Rendering options
-     - `webhook_url` (string, optional): Override user's default webhook URL for this job
+     - `webhook_url` (string, optional, **ignored**): This parameter is ignored. Webhooks are only delivered to webhooks registered via the webhook management API.
 
 3. **API Gateway Processing**
    - No authorizer configured for `/longjob` (authentication handled in Lambda)
@@ -444,21 +481,18 @@ Client → API Gateway → Lambda (longjob) → SQS Queue
      - `user_id` is already available from the user account lookup (required for quota checks, billing, etc.)
    - Checks all-time quota for free tier users (quota limit from `plan.monthly_quota` in `Plans` table)
    - Validates input size limits (~5 MB maximum)
-   - If `webhook_url` provided, validates it's a valid HTTPS URL
+   - **Note:** The `webhook_url` parameter in the request body is ignored. Webhooks are only delivered to webhooks registered via the webhook management API.
 
    **Queueing Phase (if checks pass):**
    - Generates unique `job_id` (UUID) for this request
-   - Retrieves user's default `webhook_url` from Users table (if not overridden in request)
    - Creates job record in DynamoDB `JobDetails` table with:
      - `status: "queued"`
      - `job_type: "long"`
-     - `webhook_url` (user default or override)
      - All other job metadata
    - Sends message to SQS queue with:
      - `job_id`
      - `user_sub`
      - `input_type`, `html`/`markdown`, `options`
-     - `webhook_url`
    - Returns 202 Accepted with job_id
 
 5. **SQS Processing (longjob-processor)**
@@ -485,6 +519,12 @@ Client → API Gateway → Lambda (longjob) → SQS Queue
      - `pages`, `truncated` flag
      - `completed_at` timestamp
    - Records in Analytics table
+   - **Credit Deduction (after successful PDF generation):**
+     - For all users (paid and free): Queues credit deduction message to SQS FIFO queue
+     - For free plans: Amount = 0 (no credit deduction, but still increments PDF count)
+     - For paid plans: Amount = price_per_pdf (deducts credits and increments PDF count)
+     - Credit deduction is processed asynchronously by `credit-deduction-processor` Lambda
+     - This ensures `total_pdf_count` is always updated in one reliable place (credit processor)
    - **Webhook Delivery (Multiple Webhooks System - Phase 1):**
      - Determines which webhooks should be notified based on:
        - `is_active: true`
@@ -540,13 +580,6 @@ Client → API Gateway → Lambda (longjob) → SQS Queue
      - Idempotency: Webhook receivers should handle duplicate deliveries (use `delivery_id` to deduplicate)
    - **History Tracking:** Each delivery attempt (including retries) is recorded in WebhookHistory table (permanent storage, no TTL)
    - **Statistics:** Webhook statistics (success_count, failure_count, last_triggered_at, etc.) are updated after each delivery
-
-7. **Internal Webhook Receiver:**
-   - `POST /webhook/job-done` - Internal endpoint for receiving webhook notifications
-   - Validates webhook payload structure before processing
-   - Verifies job existence and status to prevent abuse
-   - Designed for PodPDF's own internal services
-   - See API Specification section for details
 
 ---
 
@@ -618,8 +651,7 @@ Client → API Gateway → Lambda (longjob) → SQS Queue
     "margin": { "top": "20mm", "right": "20mm", "bottom": "20mm", "left": "20mm" },
     "printBackground": true,
     "scale": 1.0
-  },
-  "webhook_url": "https://example.com/webhook" // Optional: overrides user's default webhook
+  }
 }
 ```
 
@@ -856,81 +888,6 @@ For detailed API documentation, see ENDPOINTS.md section 22.
 - List endpoint only returns active plans (`is_active: true`)
 - Plans are sorted by type (free first) then alphabetically by name
 
-### 6. POST /webhook/job-done
-
-**Description:** Internal webhook receiver endpoint that receives job completion notifications from api.podpdf.com. This endpoint validates webhook payloads and processes job completion events. Designed for use by PodPDF's own internal services.
-
-**Authentication:** None (public endpoint with payload validation)
-
-**Request Body:**
-```json
-{
-  "job_id": "9f0a4b78-2c0c-4d14-9b8b-123456789abc",
-  "status": "completed",
-  "s3_url": "https://s3.amazonaws.com/podpdf-dev-pdfs/9f0a4b78-2c0c-4d14-9b8b-123456789abc.pdf?X-Amz-Signature=...",
-  "s3_url_expires_at": "2025-12-21T11:32:15Z",
-  "pages": 150,
-  "mode": "html",
-  "truncated": false,
-  "created_at": "2025-12-21T10:30:00Z",
-  "completed_at": "2025-12-21T10:32:15Z"
-}
-```
-
-**Required Fields:**
-- `job_id` (string): UUID of the completed job
-- `status` (string): Job status - must be one of: `queued`, `processing`, `completed`, `failed`, `timeout`
-
-**Optional Fields:**
-- `pages` (integer): Number of pages in the generated PDF
-- `mode` (string): Input mode - one of: `html`, `markdown`, `image`
-- `truncated` (boolean): Whether the PDF was truncated due to page limit
-- `s3_url` (string): Signed S3 URL for downloading the PDF (for long jobs)
-- `s3_url_expires_at` (string): ISO 8601 timestamp when the S3 URL expires
-- `created_at` (string): ISO 8601 timestamp when the job was created
-- `completed_at` (string): ISO 8601 timestamp when the job completed
-- `error_message` (string): Error message if job failed
-
-**Response (Success - 200 OK):**
-```json
-{
-  "message": "Webhook received successfully",
-  "job_id": "9f0a4b78-2c0c-4d14-9b8b-123456789abc",
-  "status": "completed"
-}
-```
-
-**Response (Error - 400 Bad Request):**
-- Invalid payload structure, missing required fields, invalid field types, or payload size exceeds 100KB limit
-- Status mismatch (webhook status doesn't match actual job status)
-
-**Response (Error - 404 Not Found):**
-- Job not found in system
-
-**Validation:**
-- **Structure Validation:** Request body must be valid JSON object with required fields
-- **Format Validation:** 
-  - `job_id` must be valid UUID format
-  - `status` must be one of valid status values
-  - Timestamps must be ISO 8601 format
-  - URLs must be valid URL format
-- **Size Validation:** Payload size limited to 100KB maximum
-- **Job Verification:** 
-  - Job must exist in system
-  - Job status must match webhook payload status (prevents replay attacks)
-
-**Security Features:**
-- Payload structure validation before processing
-- Job existence verification
-- Status mismatch detection to prevent replay attacks
-- Size limits to prevent abuse
-- Comprehensive logging with source IP
-
-**Notes:**
-- This endpoint is designed for internal PodPDF services
-- External users should configure their own webhooks via `POST /accounts/me/webhooks` (see Webhook Management API section)
-- All webhook receipts are logged for monitoring and debugging
-
 ### Authentication Methods
 
 The `/quickjob` and `/longjob` endpoints support two authentication methods:
@@ -983,7 +940,6 @@ All requests are validated in the following order:
    - Content field validation (400 if missing, empty, or wrong field provided)
    - Content type validation (400 if content doesn't match declared type)
    - Input size validation (400 if exceeds ~5 MB limit)
-   - Webhook URL validation (for longjob and webhook endpoint: must be HTTPS)
 
 4. **Business Logic Validation:**
    - Per-user rate limit check (403 if free tier user exceeds 20 requests/minute)
@@ -1221,16 +1177,21 @@ The following endpoints will be needed for API key management (to be implemented
 
 - **Upgrade Required:** Users must upgrade to paid plan after reaching 50 PDFs
 - **PDF Limit:** Unlimited PDFs (no quota limit)
-- **Free Credits:** Plans may include `free_credits` (e.g., 100 free PDFs). Free credits are consumed first before `price_per_pdf` billing starts.
-- **Price:** $0.01 per PDF (charged only after free credits are exhausted)
-- **Billing:** Usage tracked per PDF and invoiced monthly. Free credits are used first, then billing applies.
+- **Billing Model:** Prepaid credit-based system (not monthly invoicing)
+- **Free Credits:** Plans may include `free_credits` (e.g., 100 free PDFs). Free credits are consumed first before prepaid credits are deducted.
+- **Price:** $0.01 per PDF (deducted from prepaid credits after free credits are exhausted)
+- **Credit Balance:** Users purchase credits upfront, stored in `Users.credits_balance`
+- **Credit Deduction:** 
+  - Credits are deducted immediately after PDF generation succeeds (via SQS FIFO queue)
+  - Free credits (`free_credits_remaining`) are consumed first
+  - Prepaid credits (`credits_balance`) are deducted only when free credits are exhausted
+  - All deductions are logged to `CreditTransactions` table for audit trail
 - **Tracking:** 
-  - All-time PDF count maintained in `Users` table
+  - All-time PDF count maintained in `Users.total_pdf_count` (updated atomically by credit processor)
+  - `credits_balance` in `Users` table tracks prepaid credit balance
   - `free_credits_remaining` in `Users` table tracks remaining free credits (can go negative due to concurrent requests)
-  - Monthly billing records stored in `Bills` table (one record per user per month)
-  - Each bill record tracks `monthly_pdf_count`, `monthly_billing_amount`, and `is_paid` status
-  - Only PDFs that exceed free credits are billed (when `free_credits_remaining <= 0`)
-  - Future payment processor integration fields (bill_id, invoice_id, paddle_subscription_id, etc.) can be added to bill records
+  - All credit transactions (purchases and deductions) logged in `CreditTransactions` table
+  - Credit deduction processed via SQS FIFO queue for reliability (handles 10,000+ concurrent operations)
 - **Rate Limits:** Unlimited per-user rate (only limited by API Gateway throttling)
 
 ### Implementation Details
@@ -1250,15 +1211,21 @@ The following endpoints will be needed for API key management (to be implemented
      - Sets `quota_exceeded` flag in `Users` table when quota is exceeded
    - For paid plan users:
      - No quota check (unlimited PDFs by default)
-     - Checks if plan has `free_credits` and user has `free_credits_remaining > 0`
-     - If free credits available (`free_credits_remaining > 0`):
-       - Atomically decrements `free_credits_remaining` in `Users` table
-       - No billing charge (free credit used)
-     - If free credits exhausted (`free_credits_remaining <= 0`):
-       - Charges according to `price_per_pdf` from `Plans` table
-       - Creates or updates bill record in `Bills` table for current month
-     - Increments PDF count in `Users` table (all-time total) regardless of billing method
-     - **Note:** Due to concurrent requests, `free_credits_remaining` can go negative (e.g., `-1`, `-2`). The client should display `0` when the value is `<= 0`, and all subsequent requests will be billed.
+     - Checks if user has sufficient credits (`credits_balance >= price_per_pdf` or `free_credits_remaining > 0`)
+     - If insufficient credits, rejects with 403 `INSUFFICIENT_CREDITS` error
+     - If sufficient credits, proceeds with PDF generation
+   - **After successful PDF generation (for all users):**
+     - Queues credit deduction message to SQS FIFO queue
+     - For free plans: Amount = 0 (no credit deduction, but increments PDF count)
+     - For paid plans: Amount = price_per_pdf (deducts credits and increments PDF count)
+   - **Credit Deduction Processor (asynchronous):**
+     - Processes messages from SQS FIFO queue sequentially per user (MessageGroupId = user_id)
+     - Checks idempotency using `job_id` (prevents double-charging)
+     - For paid plans with free credits: Consumes `free_credits_remaining` first (if > 0)
+     - For paid plans without free credits: Deducts from `credits_balance`
+     - Atomically updates: `credits_balance` (or `free_credits_remaining`), `total_pdf_count`, and `credits_last_updated_at`
+     - Logs transaction to `CreditTransactions` table
+     - **Note:** Due to concurrent requests, `free_credits_remaining` can go negative (e.g., `-1`, `-2`). The client should display `0` when the value is `<= 0`, and all subsequent requests will deduct from prepaid credits.
 
 2. Account & Plan Management:
    - All users must have an account in DynamoDB `Users` table
@@ -1273,9 +1240,9 @@ The following endpoints will be needed for API key management (to be implemented
    - Quota limit is read from `plan.monthly_quota` in `Plans` table (configurable per plan)
    - If `plan.monthly_quota` is not set, falls back to `FREE_TIER_QUOTA` environment variable (default: 50)
    - Paid plan: Tracks all-time count in `Users` table (unlimited)
-   - Monthly billing tracked separately in `Bills` table (one record per user per month)
+   - `total_pdf_count` is updated atomically by credit deduction processor (single source of truth)
    - Counter increments with each successful PDF generation (both quick and long jobs)
-   - Bill records are created/updated automatically for paid users
+   - All credit transactions (purchases and deductions) logged in `CreditTransactions` table for audit trail
    - `quota_exceeded` flag in `Users` table indicates when free tier quota has been exceeded
 
 ---
@@ -1301,7 +1268,7 @@ The following endpoints will be needed for API key management (to be implemented
 ### Pricing Strategy
 
 - **Free Tier:** 50 PDFs (all-time, generous onboarding, then must upgrade)
-- **Paid Plan:** $0.01 per PDF, unlimited PDFs, monthly invoicing
+- **Paid Plan:** $0.01 per PDF, unlimited PDFs, prepaid credit-based billing
 - **Expected Gross Margin:** 80–95% at published pricing
 
 ### Cost Protection

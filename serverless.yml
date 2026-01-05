@@ -4,6 +4,7 @@ frameworkVersion: '3'
 
 plugins:
   - serverless-domain-manager
+  - serverless-prune-plugin
 
 provider:
   name: aws
@@ -36,15 +37,16 @@ provider:
     JOB_DETAILS_TABLE: ${self:custom.tableNames.${self:provider.stage}.jobDetails}
     ANALYTICS_TABLE: ${self:custom.tableNames.${self:provider.stage}.analytics}
     PLANS_TABLE: ${self:custom.tableNames.${self:provider.stage}.plans}
-    BILLS_TABLE: ${self:custom.tableNames.${self:provider.stage}.bills}
     API_KEYS_TABLE: ${self:custom.tableNames.${self:provider.stage}.apiKeys}
     WEBHOOKS_TABLE: ${self:custom.tableNames.${self:provider.stage}.webhooks}
     WEBHOOK_HISTORY_TABLE: ${self:custom.tableNames.${self:provider.stage}.webhookHistory}
+    CREDIT_TRANSACTIONS_TABLE: ${self:custom.tableNames.${self:provider.stage}.creditTransactions}
     DEFAULT_WEBHOOK_MAX_RETRIES: 3
     DEFAULT_WEBHOOK_RETRY_DELAYS: "1000,2000,4000"
     WEBHOOK_TIMEOUT_MS: 10000
     PDFS_BUCKET: podpdf-${self:provider.stage}-pdfs
     LONGJOB_QUEUE_URL: !Ref LongJobQueue
+    CREDIT_DEDUCTION_QUEUE_URL: !Ref CreditDeductionQueue
     COGNITO_USER_POOL_CLIENT_ID: !Ref CognitoUserPoolClient
     COGNITO_USER_POOL_ID: !Ref CognitoUserPool
   
@@ -102,16 +104,16 @@ provider:
             - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.jobDetails}
             - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.analytics}
             - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.plans}
-            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.bills}
             - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.apiKeys}
             - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.webhooks}
             - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.webhookHistory}
             - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.users}/index/*
             - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.jobDetails}/index/*
-            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.bills}/index/*
             - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.apiKeys}/index/*
             - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.webhooks}/index/*
             - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.webhookHistory}/index/*
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.creditTransactions}
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.creditTransactions}/index/*
         - Effect: Allow
           Action:
             - cognito-idp:GetUser
@@ -133,6 +135,7 @@ provider:
             - sqs:GetQueueAttributes
           Resource:
             - !GetAtt LongJobQueue.Arn
+            - !GetAtt CreditDeductionQueue.Arn
         - Effect: Allow
           Action:
             - ssm:GetParameter
@@ -179,6 +182,18 @@ functions:
       DEFAULT_WEBHOOK_MAX_RETRIES: 3
       DEFAULT_WEBHOOK_RETRY_DELAYS: "1000,2000,4000"
       WEBHOOK_TIMEOUT_MS: 10000
+  
+  credit-deduction-processor:
+    handler: src/handlers/credit-deduction-processor.handler
+    memorySize: 512
+    timeout: 60
+    events:
+      - sqs:
+          arn: !GetAtt CreditDeductionQueue.Arn
+          batchSize: 1
+    environment:
+      USERS_TABLE: ${self:custom.tableNames.${self:provider.stage}.users}
+      CREDIT_TRANSACTIONS_TABLE: ${self:custom.tableNames.${self:provider.stage}.creditTransactions}
   
   jobs:
     handler: src/handlers/jobs.handler
@@ -277,16 +292,12 @@ functions:
           method: get
           authorizer: cognitoAuthorizer
       - httpApi:
-          path: /accounts/me/bills
-          method: get
-          authorizer: cognitoAuthorizer
-      - httpApi:
-          path: /accounts/me/stats
-          method: get
-          authorizer: cognitoAuthorizer
-      - httpApi:
           path: /accounts/me/upgrade
           method: put
+          authorizer: cognitoAuthorizer
+      - httpApi:
+          path: /accounts/me/credits/purchase
+          method: post
           authorizer: cognitoAuthorizer
       - httpApi:
           path: /accounts/me
@@ -296,14 +307,6 @@ functions:
           path: /accounts/me/webhook
           method: put
           authorizer: cognitoAuthorizer
-  
-  webhook-receiver:
-    handler: src/handlers/webhook-receiver.handler
-    events:
-      - httpApi:
-          path: /webhook/job-done
-          method: post
-          authorizer: null  # No authorizer - uses payload validation for security
   
   api-key-authorizer:
     handler: src/handlers/api-key-authorizer.handler
@@ -353,6 +356,12 @@ functions:
       USERS_TABLE: ${self:custom.tableNames.${self:provider.stage}.users}
 
 custom:
+  # Prune old Lambda versions automatically after deployment
+  # Keeps only the last 5 versions to prevent code storage limit issues
+  prune:
+    automatic: true
+    number: 5
+  
   customDomain:
     enabled: ${self:custom.domainEnabled.${self:provider.stage}}
     domainName: api.podpdf.com
@@ -436,10 +445,10 @@ custom:
       jobDetails: podpdf-dev-job-details
       analytics: podpdf-dev-analytics
       plans: podpdf-dev-plans
-      bills: podpdf-dev-bills
       apiKeys: podpdf-dev-api-keys
       webhooks: podpdf-dev-webhooks
       webhookHistory: podpdf-dev-webhook-history
+      creditTransactions: podpdf-dev-credit-transactions
     prod:
       users: podpdf-prod-users
       userRateLimits: podpdf-prod-user-rate-limits
@@ -447,9 +456,9 @@ custom:
       jobDetails: podpdf-prod-job-details
       analytics: podpdf-prod-analytics
       plans: podpdf-prod-plans
-      bills: podpdf-prod-bills
       apiKeys: podpdf-prod-api-keys
       webhooks: podpdf-prod-webhooks
       webhookHistory: podpdf-prod-webhook-history
+      creditTransactions: podpdf-prod-credit-transactions
 
 resources: ${file(resources.yml)}
