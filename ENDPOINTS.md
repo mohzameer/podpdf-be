@@ -1681,10 +1681,17 @@ curl -X GET https://api.podpdf.com/accounts/me/stats \
 
 ---
 
-## 12. `PUT /accounts/me/upgrade`
+## 12. `PUT /accounts/me/upgrade` ⚠️ DEPRECATED
+
+**Status:** ⚠️ **DEPRECATED** - This endpoint is deprecated and will be removed in a future version.
 
 **Description:**  
 Upgrade a user account from free tier to a paid plan. This endpoint clears the `quota_exceeded` flag and updates the user's plan.
+
+**⚠️ Deprecation Notice:**
+This endpoint is deprecated. Users are now automatically upgraded to the `paid-standard` plan when they purchase credits via `POST /accounts/me/credits/purchase`. No separate upgrade call is needed. The upgrade happens atomically with the credit purchase.
+
+**Migration:** Use `POST /accounts/me/credits/purchase` instead. The upgrade will happen automatically when purchasing credits.
 
 ### 9.1 Authentication
 
@@ -1699,13 +1706,13 @@ Authorization: Bearer <jwt_token>
 - Token must be valid and not expired.
 - User account must exist in `Users` table.
 
-### 9.2 HTTP Request
+### 12.2 HTTP Request
 
 **Method:** `PUT`  
 **Path:** `/accounts/me/upgrade`  
 **Content-Type:** `application/json`
 
-#### 9.2.1 Request Body
+#### 12.2.1 Request Body
 
 ```json
 {
@@ -1716,9 +1723,9 @@ Authorization: Bearer <jwt_token>
 **Fields:**
 - `plan_id` (string, required): The ID of the paid plan to upgrade to (e.g., `"paid-standard"`).
 
-### 9.3 Response
+### 12.3 Response
 
-#### 9.3.1 Success Response
+#### 12.3.1 Success Response
 
 **Status Code:** `200 OK`
 
@@ -1744,7 +1751,7 @@ Authorization: Bearer <jwt_token>
   - `price_per_pdf` (number): Price per PDF in USD.
 - `upgraded_at` (string): ISO 8601 timestamp when the upgrade occurred.
 
-#### 9.3.2 Error Responses
+#### 12.3.2 Error Responses
 
 **400 Bad Request - Invalid Plan ID:**
 ```json
@@ -1814,7 +1821,7 @@ Authorization: Bearer <jwt_token>
 }
 ```
 
-### 9.4 Example Request
+### 12.4 Example Request
 
 ```bash
 curl -X PUT https://api.podpdf.com/accounts/me/upgrade \
@@ -1825,7 +1832,7 @@ curl -X PUT https://api.podpdf.com/accounts/me/upgrade \
   }'
 ```
 
-### 9.5 Example Response
+### 12.5 Example Response
 
 ```json
 {
@@ -1840,7 +1847,7 @@ curl -X PUT https://api.podpdf.com/accounts/me/upgrade \
 }
 ```
 
-### 9.6 Usage Notes
+### 12.6 Usage Notes
 
 - **Plan Validation:** The endpoint validates that:
   - The plan exists in the `Plans` table.
@@ -1854,7 +1861,230 @@ curl -X PUT https://api.podpdf.com/accounts/me/upgrade \
 
 ---
 
-## 13. `PUT /accounts/me/webhook` ⚠️ DEPRECATED
+## 13. `POST /accounts/me/credits/purchase`
+
+**Description:**  
+Purchase credits to add to the user's credit balance. Credits are used to pay for PDF generation on paid plans. The purchase is atomically processed and logged to the `CreditTransactions` table for audit purposes.
+
+**Automatic Plan Upgrade:** If the user is on a free plan, they will be automatically upgraded to the `paid-standard` plan when purchasing credits for the first time. This upgrade happens atomically with the credit purchase.
+
+### 13.1 Authentication
+
+- **Type:** JWT Bearer Token (Amazon Cognito)
+- **Header:**
+
+```http
+Authorization: Bearer <jwt_token>
+```
+
+**Requirements:**
+- Token must be valid and not expired.
+- User account must exist in `Users` table.
+
+### 13.2 HTTP Request
+
+**Method:** `POST`  
+**Path:** `/accounts/me/credits/purchase`  
+**Content-Type:** `application/json`
+
+#### 13.2.1 Request Body
+
+```json
+{
+  "amount": 10.50
+}
+```
+
+**Fields:**
+- `amount` (number, required): The amount of credits to purchase. Must be a positive number (e.g., `10.50` for $10.50 in credits).
+
+**Validation Rules:**
+- `amount` must be a number.
+- `amount` must be greater than 0.
+- `amount` can be a decimal (e.g., `0.01`, `10.50`, `100.00`).
+
+### 13.3 Response
+
+#### 13.3.1 Success Response
+
+**Status Code:** `200 OK`
+
+**For users already on a paid plan:**
+```json
+{
+  "message": "Credits purchased successfully",
+  "credits_balance": 25.50,
+  "amount_purchased": 10.50,
+  "transaction_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+  "purchased_at": "2025-12-24T15:30:00.000Z"
+}
+```
+
+**For users upgraded from free to paid plan:**
+```json
+{
+  "message": "Credits purchased successfully. Account upgraded to paid plan.",
+  "credits_balance": 10.50,
+  "amount_purchased": 10.50,
+  "transaction_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+  "purchased_at": "2025-12-24T15:30:00.000Z",
+  "upgraded": true,
+  "plan": {
+    "plan_id": "paid-standard",
+    "name": "Paid Standard",
+    "type": "paid",
+    "price_per_pdf": 0.01,
+    "free_credits": 0
+  },
+  "upgraded_at": "2025-12-24T15:30:00.000Z"
+}
+```
+
+**Fields:**
+- `message` (string): Success message. Includes upgrade notification if user was upgraded.
+- `credits_balance` (number): The user's updated credit balance after the purchase.
+- `amount_purchased` (number): The amount of credits that were purchased.
+- `transaction_id` (string): Unique transaction ID (ULID) for this purchase. Can be used to query the `CreditTransactions` table.
+- `purchased_at` (string): ISO 8601 timestamp of when the purchase was processed.
+- `upgraded` (boolean, optional): Present and `true` if the user was automatically upgraded from free to paid plan.
+- `plan` (object, optional): Plan details if the user was upgraded. Contains:
+  - `plan_id` (string): Plan identifier (e.g., `"paid-standard"`).
+  - `name` (string): Plan display name.
+  - `type` (string): Plan type (`"paid"`).
+  - `price_per_pdf` (number): Price per PDF in USD.
+  - `free_credits` (number): Number of free credits included with the plan.
+- `upgraded_at` (string, optional): ISO 8601 timestamp when the upgrade occurred (only present if `upgraded` is `true`).
+
+#### 13.3.2 Error Responses
+
+**400 Bad Request - Invalid Amount:**
+```json
+{
+  "error": {
+    "code": "INVALID_PARAMETER",
+    "message": "Amount must be a positive number",
+    "details": {
+      "parameter": "amount"
+    }
+  }
+}
+```
+
+**400 Bad Request - Invalid JSON:**
+```json
+{
+  "error": {
+    "code": "INVALID_PARAMETER",
+    "message": "Invalid JSON in request body",
+    "details": {
+      "parameter": "body"
+    }
+  }
+}
+```
+
+**401 Unauthorized - Missing Token:**
+```json
+{
+  "error": {
+    "code": "UNAUTHORIZED",
+    "message": "Missing or invalid JWT token"
+  }
+}
+```
+
+**403 Forbidden - Account Not Found:**
+```json
+{
+  "error": {
+    "code": "ACCOUNT_NOT_FOUND",
+    "message": "User account not found. Please create an account before using the API.",
+    "details": {
+      "action_required": "create_account"
+    }
+  }
+}
+```
+
+**500 Internal Server Error:**
+```json
+{
+  "error": {
+    "code": "INTERNAL_SERVER_ERROR",
+    "message": "Failed to purchase credits",
+    "details": {
+      "action_required": "retry_later"
+    }
+  }
+}
+```
+
+### 13.4 Example Request
+
+```bash
+curl -X POST https://api.podpdf.com/accounts/me/credits/purchase \
+  -H "Authorization: Bearer <jwt_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "amount": 10.50
+  }'
+```
+
+### 13.5 Example Response
+
+**For users already on a paid plan:**
+```json
+{
+  "message": "Credits purchased successfully",
+  "credits_balance": 25.50,
+  "amount_purchased": 10.50,
+  "transaction_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+  "purchased_at": "2025-12-24T15:30:00.000Z"
+}
+```
+
+**For users upgraded from free to paid plan:**
+```json
+{
+  "message": "Credits purchased successfully. Account upgraded to paid plan.",
+  "credits_balance": 10.50,
+  "amount_purchased": 10.50,
+  "transaction_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+  "purchased_at": "2025-12-24T15:30:00.000Z",
+  "upgraded": true,
+  "plan": {
+    "plan_id": "paid-standard",
+    "name": "Paid Standard",
+    "type": "paid",
+    "price_per_pdf": 0.01,
+    "free_credits": 0
+  },
+  "upgraded_at": "2025-12-24T15:30:00.000Z"
+}
+```
+
+### 13.6 Usage Notes
+
+- **Atomic Operation:** The credit purchase is processed atomically - the user's balance is updated and the transaction is logged in a single operation.
+- **Automatic Plan Upgrade:** If the user is on a free plan, they are automatically upgraded to the `paid-standard` plan when purchasing credits. This upgrade:
+  - Happens atomically with the credit purchase
+  - Sets `account_status` to `"paid"`
+  - Clears the `quota_exceeded` flag
+  - Sets the `upgraded_at` timestamp
+  - Grants any free credits included with the paid plan
+  - No separate upgrade endpoint call is needed
+- **Transaction Logging:** All credit purchases are logged to the `CreditTransactions` table with:
+  - `transaction_type: "purchase"`
+  - `status: "completed"`
+  - `amount: <positive number>` (the amount purchased)
+- **Credit Balance:** The `credits_balance` field in the `Users` table is atomically incremented using DynamoDB's `if_not_exists` to handle users who don't have a balance yet.
+- **Transaction History:** You can query the `CreditTransactions` table using the `UserIdIndex` GSI to retrieve a user's complete purchase and deduction history.
+- **Idempotency:** Each purchase generates a unique `transaction_id` (ULID). If you need idempotency for payment processing, you should implement it at the payment gateway level before calling this endpoint.
+- **Credit Usage:** Credits are automatically deducted when PDFs are generated on paid plans. See the credit-based billing documentation for details.
+
+---
+
+## 14. `PUT /accounts/me/webhook` ⚠️ DEPRECATED
 
 **Status:** ⚠️ **DEPRECATED** - This endpoint is deprecated and will be removed in a future version.
 
@@ -1954,7 +2184,7 @@ The response includes additional fields indicating deprecation:
 
 ---
 
-## 14. `DELETE /accounts/me`
+## 15. `DELETE /accounts/me`
 
 **Description:**  
 Delete the authenticated user's account and all associated data.
@@ -1998,7 +2228,7 @@ Authorization: Bearer <jwt_token>
 
 ---
 
-## 15. API Key Management
+## 16. API Key Management
 
 The following endpoints allow users to create, list, and revoke API keys for programmatic access to the `/quickjob` and `/longjob` endpoints.
 
@@ -2202,7 +2432,7 @@ Authorization: Bearer <jwt_token>
 
 ---
 
-## 16. Health Check
+## 17. Health Check
 
 **Description:**  
 Health check endpoint to verify service availability and basic system status.
@@ -2310,7 +2540,7 @@ curl -X GET https://api.podpdf.com/health \
 
 ---
 
-## 17. `POST /signup`
+## 18. `POST /signup`
 
 **Description:**  
 Create a new user account in Cognito. After signup, the user will receive a verification code via email. Once they confirm their email with the code, the **Post Confirmation Lambda trigger** will automatically create the DynamoDB account record. No additional API call is needed to create the account record.
@@ -2471,7 +2701,7 @@ curl -X POST https://api.podpdf.com/signup \
 
 ---
 
-## 18. `POST /confirm-signup`
+## 19. `POST /confirm-signup`
 
 **Description:**  
 Confirm user email with the verification code received via email. After successful confirmation, the **Post Confirmation Lambda trigger** will automatically create the DynamoDB account record. Once confirmed, the user can sign in using the `/signin` endpoint.
@@ -2626,7 +2856,7 @@ curl -X POST https://api.podpdf.com/confirm-signup \
 
 ---
 
-## 19. `POST /signin`
+## 20. `POST /signin`
 
 **Description:**  
 Authenticate a user with Cognito and return JWT tokens (ID token, access token, refresh token).

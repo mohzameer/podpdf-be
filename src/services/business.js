@@ -4,13 +4,14 @@
  */
 
 const { getItem, updateItem, putItem } = require('./dynamodb');
-const { Forbidden } = require('../utils/errors');
+const { Forbidden, BadRequest, InternalServerError } = require('../utils/errors');
 const logger = require('../utils/logger');
 const { SQSClient, SendMessageCommand } = require('@aws-sdk/client-sqs');
 
 const USERS_TABLE = process.env.USERS_TABLE;
 const USER_RATE_LIMITS_TABLE = process.env.USER_RATE_LIMITS_TABLE;
 const PLANS_TABLE = process.env.PLANS_TABLE;
+const CREDIT_TRANSACTIONS_TABLE = process.env.CREDIT_TRANSACTIONS_TABLE;
 const CREDIT_DEDUCTION_QUEUE_URL = process.env.CREDIT_DEDUCTION_QUEUE_URL;
 const RATE_LIMIT_PER_MINUTE = parseInt(process.env.RATE_LIMIT_PER_MINUTE || '20', 10);
 const FREE_TIER_QUOTA = parseInt(process.env.FREE_TIER_QUOTA || '100', 10);
@@ -436,6 +437,161 @@ async function queueCreditDeduction(userId, jobId, amount) {
   }
 }
 
+/**
+ * Purchase credits for a user
+ * Atomically adds credits to user's balance and logs transaction
+ * Automatically upgrades free plan users to paid plan on first purchase
+ * @param {string} userId - User ID
+ * @param {number} amount - Amount to add (must be positive)
+ * @returns {Promise<{success: boolean, newBalance: number, transactionId: string, upgraded: boolean, plan: object|null, error: object|null}>}
+ */
+async function purchaseCredits(userId, amount) {
+  try {
+    // Validate amount
+    if (!amount || typeof amount !== 'number' || amount <= 0) {
+      return {
+        success: false,
+        newBalance: null,
+        transactionId: null,
+        upgraded: false,
+        plan: null,
+        error: BadRequest.INVALID_PARAMETER('amount', 'Amount must be a positive number'),
+      };
+    }
+
+    // Get user account
+    const user = await getItem(USERS_TABLE, { user_id: userId });
+    if (!user) {
+      return {
+        success: false,
+        newBalance: null,
+        transactionId: null,
+        upgraded: false,
+        plan: null,
+        error: Forbidden.ACCOUNT_NOT_FOUND(),
+      };
+    }
+
+    // Check if user is on a free plan and needs to be upgraded
+    const currentPlanId = user.plan_id || 'free-basic';
+    const currentPlan = await getPlan(currentPlanId);
+    const isFreePlan = !currentPlan || currentPlan.type !== 'paid';
+    let upgraded = false;
+    let upgradePlan = null;
+    const DEFAULT_PAID_PLAN = 'paid-standard';
+
+    // If user is on free plan, upgrade them to paid-standard
+    if (isFreePlan) {
+      const paidPlan = await getPlan(DEFAULT_PAID_PLAN);
+      if (!paidPlan || paidPlan.type !== 'paid' || !paidPlan.is_active) {
+        logger.error('Default paid plan not found or inactive', {
+          userId,
+          defaultPlanId: DEFAULT_PAID_PLAN,
+        });
+        return {
+          success: false,
+          newBalance: null,
+          transactionId: null,
+          upgraded: false,
+          plan: null,
+          error: InternalServerError.GENERIC('Default paid plan not available'),
+        };
+      }
+
+      upgradePlan = paidPlan;
+      upgraded = true;
+    }
+
+    const currentBalance = user.credits_balance || 0;
+    const nowISO = new Date().toISOString();
+
+    // Build update expression for credits and optional upgrade
+    let updateExpression = 'SET credits_balance = if_not_exists(credits_balance, :zero) + :amount, credits_last_updated_at = :now';
+    const expressionAttributeValues = {
+      ':zero': 0,
+      ':amount': amount,
+      ':now': nowISO,
+    };
+
+    // If upgrading, add plan upgrade fields
+    if (upgraded) {
+      updateExpression += ', plan_id = :plan_id, account_status = :status, quota_exceeded = :false, upgraded_at = :upgraded_at';
+      expressionAttributeValues[':plan_id'] = DEFAULT_PAID_PLAN;
+      expressionAttributeValues[':status'] = 'paid';
+      expressionAttributeValues[':false'] = false;
+      expressionAttributeValues[':upgraded_at'] = nowISO;
+
+      // Initialize free_credits_remaining if plan has free credits
+      if (upgradePlan.free_credits && upgradePlan.free_credits > 0) {
+        updateExpression += ', free_credits_remaining = if_not_exists(free_credits_remaining, :zero_credits) + :credits';
+        expressionAttributeValues[':zero_credits'] = 0;
+        expressionAttributeValues[':credits'] = upgradePlan.free_credits;
+      }
+    }
+
+    // Atomically update credits_balance (and upgrade if needed)
+    const updatedUser = await updateItem(
+      USERS_TABLE,
+      { user_id: userId },
+      updateExpression,
+      expressionAttributeValues
+    );
+
+    // Log transaction to CreditTransactions table
+    const { generateULID } = require('../utils/ulid');
+    const transactionId = generateULID();
+
+    await putItem(CREDIT_TRANSACTIONS_TABLE, {
+      transaction_id: transactionId,
+      user_id: userId,
+      amount: amount, // Positive for purchases
+      transaction_type: 'purchase',
+      status: 'completed',
+      created_at: nowISO,
+      processed_at: nowISO,
+    });
+
+    logger.info('Credits purchased', {
+      userId,
+      amount,
+      oldBalance: currentBalance,
+      newBalance: updatedUser.credits_balance,
+      transactionId,
+      upgraded,
+      planId: upgraded ? DEFAULT_PAID_PLAN : currentPlanId,
+    });
+
+    return {
+      success: true,
+      newBalance: updatedUser.credits_balance,
+      transactionId,
+      upgraded,
+      plan: upgraded ? {
+        plan_id: upgradePlan.plan_id,
+        name: upgradePlan.name,
+        type: upgradePlan.type,
+        price_per_pdf: upgradePlan.price_per_pdf,
+        free_credits: upgradePlan.free_credits || 0,
+      } : null,
+      error: null,
+    };
+  } catch (error) {
+    logger.error('Error purchasing credits', {
+      error: error.message,
+      userId,
+      amount,
+    });
+    return {
+      success: false,
+      newBalance: null,
+      transactionId: null,
+      upgraded: false,
+      plan: null,
+      error: InternalServerError.GENERIC('Failed to purchase credits'),
+    };
+  }
+}
+
 module.exports = {
   getUserAccount,
   getPlan,
@@ -445,5 +601,6 @@ module.exports = {
   checkCredits,
   queueCreditDeduction,
   validateUserAndPlan,
+  purchaseCredits,
 };
 

@@ -296,6 +296,10 @@ functions:
           method: put
           authorizer: cognitoAuthorizer
       - httpApi:
+          path: /accounts/me/credits/purchase
+          method: post
+          authorizer: cognitoAuthorizer
+      - httpApi:
           path: /accounts/me
           method: delete
           authorizer: cognitoAuthorizer

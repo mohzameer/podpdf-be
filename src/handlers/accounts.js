@@ -8,7 +8,7 @@
 const logger = require('../utils/logger');
 const { Unauthorized, Forbidden, InternalServerError, BadRequest } = require('../utils/errors');
 const { extractUserSub } = require('../middleware/auth');
-const { getUserAccount, validateUserAndPlan } = require('../services/business');
+const { getUserAccount, validateUserAndPlan, purchaseCredits: purchaseCreditsService } = require('../services/business');
 const { generateULID } = require('../utils/ulid');
 const { putItem, updateItem, deleteItem } = require('../services/dynamodb');
 const { validateWebhookUrl } = require('../services/validation');
@@ -37,6 +37,8 @@ async function handler(event) {
       return await updateWebhook(event);
     } else if (method === 'PUT' && path === '/accounts/me/upgrade') {
       return await upgradeToPaidPlan(event);
+    } else if (method === 'POST' && path === '/accounts/me/credits/purchase') {
+      return await purchaseCredits(event);
     }
 
     return {
@@ -389,8 +391,11 @@ async function getBilling(event) {
 
 /**
  * PUT /accounts/me/upgrade - Upgrade user to paid plan
+ * @deprecated This endpoint is deprecated. Users are automatically upgraded to paid plan when they purchase credits.
  */
 async function upgradeToPaidPlan(event) {
+  // Log deprecation warning
+  logger.warn('Deprecated endpoint used: PUT /accounts/me/upgrade. Users are now automatically upgraded when purchasing credits via POST /accounts/me/credits/purchase');
   try {
     const userSub = await extractUserSub(event);
 
@@ -470,24 +475,119 @@ async function upgradeToPaidPlan(event) {
     // Get updated user to return free_credits_remaining
     const updatedUser = await getUserAccount(userSub);
     
+    const responseBody = {
+      message: 'Account upgraded successfully',
+      plan: {
+        plan_id: plan.plan_id,
+        name: plan.name,
+        type: plan.type,
+        price_per_pdf: plan.price_per_pdf,
+        free_credits: plan.free_credits || 0,
+      },
+      free_credits_remaining: updatedUser?.free_credits_remaining ?? (plan.free_credits || 0),
+      upgraded_at: nowISO,
+      _deprecated: true,
+      _deprecation_message: 'This endpoint is deprecated. Users are automatically upgraded to paid plan when purchasing credits via POST /accounts/me/credits/purchase',
+    };
+
     return {
       statusCode: 200,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        message: 'Account upgraded successfully',
-        plan: {
-          plan_id: plan.plan_id,
-          name: plan.name,
-          type: plan.type,
-          price_per_pdf: plan.price_per_pdf,
-          free_credits: plan.free_credits || 0,
-        },
-        free_credits_remaining: updatedUser?.free_credits_remaining ?? (plan.free_credits || 0),
-        upgraded_at: nowISO,
-      }),
+      headers: { 
+        'Content-Type': 'application/json',
+        'Deprecation': 'true',
+        'Sunset': 'Mon, 01 Jan 2026 00:00:00 GMT',
+        'Link': '</accounts/me/credits/purchase>; rel="successor-version"',
+      },
+      body: JSON.stringify(responseBody),
     };
   } catch (error) {
     logger.error('Error upgrading account', {
+      error: error.message,
+      stack: error.stack,
+    });
+    return InternalServerError.GENERIC(error.message);
+  }
+}
+
+/**
+ * POST /accounts/me/credits/purchase - Purchase credits
+ */
+async function purchaseCredits(event) {
+  try {
+    const userSub = await extractUserSub(event);
+    if (!userSub) {
+      return {
+        statusCode: 401,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          error: {
+            code: 'UNAUTHORIZED',
+            message: 'Missing or invalid JWT token',
+          },
+        }),
+      };
+    }
+
+    // Get user account
+    const user = await getUserAccount(userSub);
+    if (!user) {
+      return Forbidden.ACCOUNT_NOT_FOUND();
+    }
+
+    // Parse request body
+    let body;
+    try {
+      body = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
+    } catch (error) {
+      return BadRequest.INVALID_PARAMETER('body', 'Invalid JSON in request body');
+    }
+
+    const { amount } = body;
+
+    // Validate amount
+    if (!amount || typeof amount !== 'number' || amount <= 0) {
+      return BadRequest.INVALID_PARAMETER('amount', 'Amount must be a positive number');
+    }
+
+    // Purchase credits
+    const result = await purchaseCreditsService(user.user_id, amount);
+
+    if (!result.success) {
+      return result.error;
+    }
+
+    logger.info('Credits purchased successfully', {
+      userId: user.user_id,
+      userSub,
+      amount,
+      newBalance: result.newBalance,
+      transactionId: result.transactionId,
+      upgraded: result.upgraded,
+    });
+
+    const responseBody = {
+      message: 'Credits purchased successfully',
+      credits_balance: result.newBalance,
+      amount_purchased: amount,
+      transaction_id: result.transactionId,
+      purchased_at: new Date().toISOString(),
+    };
+
+    // Include upgrade information if user was upgraded
+    if (result.upgraded && result.plan) {
+      responseBody.upgraded = true;
+      responseBody.plan = result.plan;
+      responseBody.upgraded_at = new Date().toISOString();
+      responseBody.message = 'Credits purchased successfully.';
+    }
+
+    return {
+      statusCode: 200,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(responseBody),
+    };
+  } catch (error) {
+    logger.error('Error purchasing credits', {
       error: error.message,
       stack: error.stack,
     });
