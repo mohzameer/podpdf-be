@@ -11,6 +11,8 @@ Resources:
           AttributeType: S
         - AttributeName: user_sub
           AttributeType: S
+        - AttributeName: email
+          AttributeType: S
       KeySchema:
         - AttributeName: user_id
           KeyType: HASH
@@ -18,6 +20,12 @@ Resources:
         - IndexName: UserSubIndex
           KeySchema:
             - AttributeName: user_sub
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+        - IndexName: EmailIndex
+          KeySchema:
+            - AttributeName: email
               KeyType: HASH
           Projection:
             ProjectionType: ALL
@@ -242,6 +250,8 @@ Resources:
           AttributeType: S
         - AttributeName: job_id
           AttributeType: S
+        - AttributeName: reference_id
+          AttributeType: S
       KeySchema:
         - AttributeName: transaction_id
           KeyType: HASH
@@ -258,6 +268,81 @@ Resources:
               KeyType: HASH
           Projection:
             ProjectionType: ALL
+        - IndexName: ReferenceIdIndex
+          KeySchema:
+            - AttributeName: reference_id
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      Tags:
+        - Key: Stage
+          Value: ${self:provider.stage}
+        - Key: Service
+          Value: podpdf
+  
+  CreditLedgerTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: ${self:custom.tableNames.${self:provider.stage}.creditLedger}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: transaction_id
+          AttributeType: S
+        - AttributeName: user_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: transaction_id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: UserIdIndex
+          KeySchema:
+            - AttributeName: user_id
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      Tags:
+        - Key: Stage
+          Value: ${self:provider.stage}
+        - Key: Service
+          Value: podpdf
+  
+  RefundLogTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: ${self:custom.tableNames.${self:provider.stage}.refundLog}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: adjustment_id
+          AttributeType: S
+        - AttributeName: transaction_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: adjustment_id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: TransactionIdIndex
+          KeySchema:
+            - AttributeName: transaction_id
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      Tags:
+        - Key: Stage
+          Value: ${self:provider.stage}
+        - Key: Service
+          Value: podpdf
+  
+  CreditMappingsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: ${self:custom.tableNames.${self:provider.stage}.creditMappings}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: price_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: price_id
+          KeyType: HASH
       Tags:
         - Key: Stage
           Value: ${self:provider.stage}

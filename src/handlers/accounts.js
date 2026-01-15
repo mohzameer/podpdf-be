@@ -9,6 +9,7 @@ const logger = require('../utils/logger');
 const { Unauthorized, Forbidden, InternalServerError, BadRequest } = require('../utils/errors');
 const { extractUserSub } = require('../middleware/auth');
 const { getUserAccount, validateUserAndPlan, purchaseCredits: purchaseCreditsService } = require('../services/business');
+const { getAllCreditPackages } = require('../services/paddle');
 const { generateULID } = require('../utils/ulid');
 const { putItem, updateItem, deleteItem } = require('../services/dynamodb');
 const { validateWebhookUrl } = require('../services/validation');
@@ -39,6 +40,8 @@ async function handler(event) {
       return await upgradeToPaidPlan(event);
     } else if (method === 'POST' && path === '/accounts/me/credits/purchase') {
       return await purchaseCredits(event);
+    } else if (method === 'GET' && path === '/accounts/me/credits/packages') {
+      return await getCreditPackages(event);
     }
 
     return {
@@ -592,6 +595,31 @@ async function purchaseCredits(event) {
       stack: error.stack,
     });
     return InternalServerError.GENERIC(error.message);
+  }
+}
+
+/**
+ * GET /accounts/me/credits/packages - Get all available credit packages
+ * Public endpoint (no authentication required) - anyone can see available packages
+ */
+async function getCreditPackages(event) {
+  try {
+    const packages = await getAllCreditPackages();
+
+    return {
+      statusCode: 200,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        packages,
+        count: packages.length,
+      }),
+    };
+  } catch (error) {
+    logger.error('Error getting credit packages', {
+      error: error.message,
+      stack: error.stack,
+    });
+    return InternalServerError.GENERIC('Failed to retrieve credit packages');
   }
 }
 

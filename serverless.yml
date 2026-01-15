@@ -114,6 +114,11 @@ provider:
             - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.webhookHistory}/index/*
             - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.creditTransactions}
             - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.creditTransactions}/index/*
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.creditLedger}
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.creditLedger}/index/*
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.refundLog}
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.refundLog}/index/*
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableNames.${self:provider.stage}.creditMappings}
         - Effect: Allow
           Action:
             - cognito-idp:GetUser
@@ -142,6 +147,7 @@ provider:
             - ssm:GetParameters
           Resource:
             - arn:aws:ssm:${self:provider.region}:*:parameter/podpdf/${self:provider.stage}/health/api-key
+            - arn:aws:ssm:${self:provider.region}:*:parameter/podpdf/${self:provider.stage}/paddle/webhook-secret
 
 functions:
   quickjob:
@@ -278,6 +284,8 @@ functions:
   
   accounts:
     handler: src/handlers/accounts.handler
+    environment:
+      CREDIT_MAPPINGS_TABLE: ${self:custom.tableNames.${self:provider.stage}.creditMappings}
     events:
       - httpApi:
           path: /accounts
@@ -299,6 +307,10 @@ functions:
           path: /accounts/me/credits/purchase
           method: post
           authorizer: cognitoAuthorizer
+      - httpApi:
+          path: /accounts/me/credits/packages
+          method: get
+          authorizer: null  # Public endpoint - no authentication required
       - httpApi:
           path: /accounts/me
           method: delete
@@ -354,6 +366,23 @@ functions:
           trigger: PostConfirmation
     environment:
       USERS_TABLE: ${self:custom.tableNames.${self:provider.stage}.users}
+  
+  paddle-webhook:
+    handler: src/handlers/paddle-webhook.handler
+    timeout: 10
+    memorySize: 512
+    events:
+      - httpApi:
+          path: /webhooks/paddle
+          method: post
+          authorizer: null  # Public endpoint (validated via signature)
+    environment:
+      USERS_TABLE: ${self:custom.tableNames.${self:provider.stage}.users}
+      CREDIT_TRANSACTIONS_TABLE: ${self:custom.tableNames.${self:provider.stage}.creditTransactions}
+      CREDIT_LEDGER_TABLE: ${self:custom.tableNames.${self:provider.stage}.creditLedger}
+      REFUND_LOG_TABLE: ${self:custom.tableNames.${self:provider.stage}.refundLog}
+      CREDIT_MAPPINGS_TABLE: ${self:custom.tableNames.${self:provider.stage}.creditMappings}
+      PADDLE_WEBHOOK_SECRET_SSM: /podpdf/${self:provider.stage}/paddle/webhook-secret
 
 custom:
   # Prune old Lambda versions automatically after deployment
@@ -449,6 +478,9 @@ custom:
       webhooks: podpdf-dev-webhooks
       webhookHistory: podpdf-dev-webhook-history
       creditTransactions: podpdf-dev-credit-transactions
+      creditLedger: podpdf-dev-credit-ledger
+      refundLog: podpdf-dev-refund-log
+      creditMappings: podpdf-dev-credit-mappings
     prod:
       users: podpdf-prod-users
       userRateLimits: podpdf-prod-user-rate-limits
@@ -460,5 +492,8 @@ custom:
       webhooks: podpdf-prod-webhooks
       webhookHistory: podpdf-prod-webhook-history
       creditTransactions: podpdf-prod-credit-transactions
+      creditLedger: podpdf-prod-credit-ledger
+      refundLog: podpdf-prod-refund-log
+      creditMappings: podpdf-prod-credit-mappings
 
 resources: ${file(resources.yml)}
