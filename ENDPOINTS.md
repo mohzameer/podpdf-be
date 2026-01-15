@@ -1304,6 +1304,7 @@ Authorization: Bearer <jwt_token>
   "billing": {
     "plan_id": "paid-standard",
     "plan_type": "paid",
+    "monthly_quota": null,
     "credits_balance": 10.50,
     "free_credits_remaining": 5,
     "total_pdf_count": 25,
@@ -1319,6 +1320,7 @@ Authorization: Bearer <jwt_token>
   "billing": {
     "plan_id": "free-basic",
     "plan_type": "free",
+    "monthly_quota": 50,
     "credits_balance": 0,
     "free_credits_remaining": null,
     "total_pdf_count": 42,
@@ -1331,6 +1333,7 @@ Authorization: Bearer <jwt_token>
 **Fields:**
 - `plan_id` (string): Current plan ID.
 - `plan_type` (string): `"free"` or `"paid"`.
+- `monthly_quota` (number|null): All-time quota limit from plan configuration. `null` for paid plans (unlimited). For free plans, represents the all-time quota limit (not monthly, despite the name).
 - `credits_balance` (number): Prepaid credit balance in USD. `0` for free plan users.
 - `free_credits_remaining` (number|null): Remaining free PDF credits. `null` if plan has no free credits.
 - `total_pdf_count` (number): All-time PDF count (cumulative total since account creation, does not reset).
@@ -1358,6 +1361,7 @@ curl -X GET https://api.podpdf.com/accounts/me/billing \
   "billing": {
     "plan_id": "paid-standard",
     "plan_type": "paid",
+    "monthly_quota": null,
     "credits_balance": 10.50,
     "free_credits_remaining": 5,
     "total_pdf_count": 25,
@@ -1373,6 +1377,7 @@ curl -X GET https://api.podpdf.com/accounts/me/billing \
   "billing": {
     "plan_id": "free-basic",
     "plan_type": "free",
+    "monthly_quota": 50,
     "credits_balance": 0,
     "free_credits_remaining": null,
     "total_pdf_count": 42,

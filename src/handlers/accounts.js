@@ -369,6 +369,7 @@ async function getBilling(event) {
     const billing = {
       plan_id: planId,
       plan_type: plan?.type || 'free',
+      monthly_quota: plan?.monthly_quota ?? null,
       credits_balance: credits_balance,
       free_credits_remaining: free_credits_remaining,
       total_pdf_count: total_pdf_count, // Total PDFs generated (all-time)
