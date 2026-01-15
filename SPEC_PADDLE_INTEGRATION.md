@@ -6,9 +6,11 @@ This specification outlines the backend implementation for integrating Paddle pa
 
 **Key Features:**
 - Paddle webhook endpoint for payment events
-- Automatic credit granting on successful payment
-- Idempotency to prevent double crediting
-- SSM Parameter Store for secure credential management
+- Automatic credit granting on successful payment (`transaction.completed`)
+- Refund-safe credit revocation via adjustments (`adjustment.created` / `adjustment.updated`)
+- Idempotency to prevent double crediting and double refund processing
+- Deterministic signature validation (no secrets or keys needed)
+- Credit ledger system for audit trail and refund calculations
 - Integration with existing credit system
 
 ---
@@ -20,38 +22,35 @@ This specification outlines the backend implementation for integrating Paddle pa
 1. **Paddle Webhook Handler** (`src/handlers/paddle-webhook.js`)
    - Receives webhook events from Paddle
    - Validates webhook signatures
-   - Processes `transaction.completed` events
-   - Grants credits to users
+   - Routes events to appropriate handlers:
+     - `transaction.completed` → grants credits
+     - `adjustment.created` / `adjustment.updated` → processes refunds
 
 2. **Paddle Service** (`src/services/paddle.js`)
    - Webhook signature verification
    - Credit mapping logic (price ID → credit amount)
    - User lookup by email
+   - Transaction completion handling (credit granting)
+   - Adjustment handling (refund processing)
 
-3. **SSM Parameter Store**
-   - Stores Paddle webhook secrets (sandbox and production)
-   - Stores credit mapping configuration (optional, can be hardcoded initially)
+3. **Credit Ledger System**
+   - Tracks granted, used, and revoked credits per transaction
+   - Enables refund-safe credit revocation (never revokes used credits)
+   - Supports full refunds only (revokes all unused credits)
+
+4. **SSM Parameter Store (Optional)**
+   - Can store credit mapping configuration (optional, can be hardcoded initially)
+   - **Note:** No webhook secrets or public keys needed - Paddle uses deterministic signature validation
 
 ---
 
 ## Environment Variables (SSM Parameters)
 
-All Paddle-related credentials and configuration will be stored in AWS Systems Manager Parameter Store using the following naming convention:
+**Note:** Paddle Billing uses deterministic signature validation - no secrets or public keys are required. The signature is verified using a deterministic hash scheme.
 
-```
-/podpdf/{stage}/paddle/webhook-secret
-/podpdf/{stage}/paddle/credit-mapping
-```
+### Optional SSM Parameters
 
-### Required SSM Parameters
-
-#### 1. Webhook Secret
-- **Path:** `/podpdf/{stage}/paddle/webhook-secret`
-- **Type:** `SecureString`
-- **Description:** Paddle webhook signing secret for signature verification
-- **Example:** `/podpdf/dev/paddle/webhook-secret` (sandbox) or `/podpdf/prod/paddle/webhook-secret` (production)
-
-#### 2. Credit Mapping (Optional - can be hardcoded initially)
+#### 1. Credit Mapping (Optional - can be hardcoded initially)
 - **Path:** `/podpdf/{stage}/paddle/credit-mapping`
 - **Type:** `String` (JSON)
 - **Description:** Mapping of Paddle price IDs to credit amounts
@@ -78,15 +77,24 @@ Public webhook endpoint for Paddle payment events.
 **Authentication:** None (validated via signature)
 
 **Request Headers:**
-- `paddle-signature`: HMAC SHA256 signature of the request body
+- `paddle-signature`: Signature header in format `ts=1234567890,v1=abc123...` where `v1` is SHA256(timestamp + rawBody)
 
 **Request Body:**
 Paddle webhook payload (JSON). Key fields:
-- `event_type`: Event type (e.g., `transaction.completed`)
+- `event_type`: Event type (e.g., `transaction.completed`, `adjustment.created`, `adjustment.updated`)
 - `data`: Event data containing:
-  - `id`: Transaction ID
-  - `customer`: Customer object with `email`
-  - `items`: Array of items with `price_id`
+  - For `transaction.completed`:
+    - `id`: Transaction ID
+    - `customer_id`: Customer ID
+    - `customer`: Customer object with `email`
+    - `items`: Array of items with `price_id`
+    - `totals`: Transaction totals with `total` (USD amount)
+  - For `adjustment.created` / `adjustment.updated`:
+    - `id`: Adjustment ID
+    - `transaction_id`: Original transaction ID
+    - `action`: Adjustment action (e.g., `"refund"`)
+    - `status`: Adjustment status (e.g., `"approved"`)
+    - `totals`: Adjustment totals with `total` (refund amount in USD)
 
 **Response:**
 - `200 OK`: Webhook processed successfully
@@ -133,15 +141,19 @@ Paddle webhook payload (JSON). Key fields:
 - Return appropriate HTTP responses
 
 **Signature Verification:**
-- Use HMAC SHA256 with webhook secret from SSM
-- Compare signature using `crypto.timingSafeEqual()` to prevent timing attacks
+- Paddle Billing uses deterministic signature validation (no secret or public key)
+- Signature header format: `ts=1234567890,v1=abc123...`
+- Compute: `SHA256(timestamp + rawBody)` and compare with `v1` value
+- Use `crypto.timingSafeEqual()` for comparison
 - Return 401 if signature is invalid
 
 **Event Processing:**
-- Handle `transaction.completed` events
-- Ignore other event types (return 200 but log)
-- Extract transaction ID, customer email, and price ID
-- Call service to grant credits
+- Route events based on `event_type`:
+  - `transaction.completed` → Call `handleTransactionCompleted()`
+  - `adjustment.created` / `adjustment.updated` → Call `handleAdjustment()`
+  - Other event types → Log and return 200 (ignore)
+- Extract relevant data from event payload
+- Call appropriate service functions for credit granting or refund processing
 
 **Error Handling:**
 - Use existing error utilities from `src/utils/errors.js`
@@ -154,8 +166,10 @@ Paddle webhook payload (JSON). Key fields:
 
 **Functions:**
 
-#### `verifyWebhookSignature(signature, body, secret)`
-- Verifies HMAC SHA256 signature
+#### `verifyWebhookSignature(signatureHeader, body)`
+- Verifies deterministic signature (no secret or key needed)
+- Parses signature header: `ts=1234567890,v1=abc123...`
+- Computes SHA256(timestamp + rawBody) and compares with v1
 - Returns boolean
 
 #### `getCreditAmount(priceId)`
@@ -163,12 +177,28 @@ Paddle webhook payload (JSON). Key fields:
 - Initially hardcoded mapping
 - Can be extended to read from SSM later
 
-#### `grantCreditsFromPaddleTransaction(transactionId, userEmail, priceId)`
-- Looks up user by email using `scan` with filter
+#### `handleTransactionCompleted(transactionData)`
+- Extracts transaction ID, customer ID, and price ID from transaction data
 - Gets credit amount for price ID
-- Checks idempotency (prevents double crediting)
-- Calls `purchaseCredits` from business service with metadata
+- Checks idempotency using credit ledger (prevents double crediting)
+- Looks up user by customer ID (or email fallback)
+- Creates credit ledger entry
+- Grants credits via `purchaseCredits` from business service
 - Returns result with transaction details
+
+#### `handleAdjustment(adjustmentData)`
+- Filters for refund adjustments only (`action === 'refund'` and `status === 'approved'`)
+- Checks idempotency using refund log (prevents double processing)
+- Retrieves credit ledger for original transaction
+- Calculates unused credits (granted - used - revoked)
+- Revokes all unused credits (full refund only - no partial refunds)
+- Updates credit ledger and user balance
+- Logs refund processing
+
+#### `getCreditAmount(priceId)`
+- Maps Paddle price ID to credit amount
+- Initially hardcoded mapping
+- Can be extended to read from SSM later
 
 **Idempotency:**
 - Check `CreditTransactions` table for existing transaction with `reference_id = transactionId` using `ReferenceIdIndex` GSI
@@ -218,6 +248,148 @@ await putItem(CREDIT_TRANSACTIONS_TABLE, {
 });
 ```
 
+### 4. Credit Ledger System
+
+**Purpose:**
+The credit ledger tracks granted, used, and revoked credits per Paddle transaction. This enables refund-safe credit revocation that never revokes credits that have already been used.
+
+**Credit Ledger Table Structure:**
+```javascript
+{
+  ledger_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV", // ULID
+  transaction_id: "txn_01abc123", // Paddle transaction ID (partition key)
+  user_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+  credits_granted: 1000, // Credits granted on transaction.completed
+  credits_used: 250, // Credits consumed (updated by credit deduction processor)
+  credits_revoked: 0, // Credits revoked due to refunds
+  created_at: "2025-01-15T10:30:00.000Z",
+  updated_at: "2025-01-15T10:30:00.000Z"
+}
+```
+
+**Key Operations:**
+1. **Create Ledger on Transaction Completion:**
+   - Initialize `credits_granted` with credit amount
+   - Set `credits_used` and `credits_revoked` to 0
+   - Use `transaction_id` as partition key for fast lookups
+
+2. **Update Credits Used:**
+   - Credit deduction processor updates `credits_used` when credits are consumed
+   - Can be updated asynchronously or via a separate process
+
+3. **Calculate Unused Credits:**
+   - Formula: `unusedCredits = credits_granted - credits_used - credits_revoked`
+   - Used to determine how many credits can be safely revoked on refund
+
+### 5. Refund Processing Logic
+
+**Paddle Billing Refund Model:**
+- Refunds are represented as **adjustments** (not transaction status changes)
+- Only `adjustment.created` and `adjustment.updated` events with `action === 'refund'` and `status === 'approved'` trigger refund processing
+- Adjustments reference the original transaction via `transaction_id`
+- **Note:** This integration only supports **full refunds**. Partial refunds are not supported.
+
+**Refund Processing Steps:**
+
+1. **Filter Valid Refunds:**
+   ```javascript
+   if (adjustment.action !== 'refund') return; // Ignore non-refund adjustments
+   if (adjustment.status !== 'approved') return; // Only process approved refunds
+   ```
+
+2. **Idempotency Check:**
+   - Check `RefundLog` table for existing entry with `adjustment_id`
+   - If exists, skip processing (already handled)
+
+3. **Retrieve Credit Ledger:**
+   - Look up credit ledger by `transaction_id` from adjustment
+   - If ledger not found, log warning and skip (transaction may not have been processed)
+
+4. **Calculate Unused Credits:**
+   ```javascript
+   const unusedCredits = ledger.credits_granted - ledger.credits_used - ledger.credits_revoked;
+   if (unusedCredits <= 0) {
+     // No credits to revoke (all used or already revoked)
+     // Mark refund as processed and return
+     await markRefundProcessed(adjustmentId);
+     return;
+   }
+   ```
+
+5. **Revoke All Unused Credits (Full Refund Only):**
+   - Decrement user's `credits_balance` by `unusedCredits` (all unused credits)
+   - Increment ledger's `credits_revoked` by `unusedCredits`
+   - Log refund transaction to `CreditTransactions` table (negative amount)
+
+6. **Mark Refund as Processed:**
+   - Create entry in `RefundLog` table with `adjustment_id`
+
+**Refund Log Table Structure:**
+```javascript
+{
+  adjustment_id: "adj_01abc123", // Paddle adjustment ID (partition key)
+  transaction_id: "txn_01abc123", // Original transaction ID
+  refund_amount: "10.00", // USD (full refund amount)
+  credits_revoked: 1000, // Credits revoked (all unused credits)
+  processed_at: "2025-01-15T11:00:00.000Z"
+}
+```
+
+**Refund Flow Summary:**
+
+**Flow 1: Full Refund with Unused Credits**
+1. User purchases 1000 credits via Paddle
+2. Credit ledger created: `credits_granted: 1000, credits_used: 0, credits_revoked: 0`
+3. User uses 300 credits (ledger: `credits_used: 300`)
+4. Refund webhook received (`adjustment.created` with `action=refund`, `status=approved`)
+5. System calculates: `unusedCredits = 1000 - 300 - 0 = 700`
+6. System revokes all 700 unused credits
+7. User's `credits_balance` decremented by 700
+8. Ledger updated: `credits_revoked: 700`
+9. Refund logged in `RefundLog` table
+
+**Flow 2: Full Refund with All Credits Used**
+1. User purchases 1000 credits via Paddle
+2. Credit ledger created: `credits_granted: 1000, credits_used: 0, credits_revoked: 0`
+3. User uses all 1000 credits (ledger: `credits_used: 1000`)
+4. Refund webhook received
+5. System calculates: `unusedCredits = 1000 - 1000 - 0 = 0`
+6. No credits to revoke (all used)
+7. Refund marked as processed in `RefundLog` (no credit revocation)
+8. User keeps their used credits (no negative balance)
+
+**Flow 3: Duplicate Refund Webhook (Idempotency)**
+1. Refund webhook received
+2. System checks `RefundLog` for `adjustment_id`
+3. Entry exists → skip processing, return 200 OK
+4. No double revocation
+
+**Flow 4: Refund Before Transaction Processed**
+1. Refund webhook received
+2. System looks up credit ledger by `transaction_id`
+3. Ledger not found → log warning, skip processing, return 200 OK
+4. Transaction may not have been processed yet
+
+**Flow 5: Non-Refund Adjustment**
+1. Adjustment webhook received with `action !== 'refund'`
+2. System ignores (not a refund)
+3. Return 200 OK
+
+**Flow 6: Pending Refund**
+1. Adjustment webhook received with `status !== 'approved'`
+2. System ignores (not approved yet)
+3. Return 200 OK (will process when status becomes 'approved')
+
+**Golden Rules:**
+- ✅ Grant credits only on `transaction.completed`
+- ✅ Detect refunds only via `adjustment.*` events
+- ✅ Never revoke used credits (check `credits_used` before revoking)
+- ✅ Only support full refunds (revoke all unused credits)
+- ✅ Always be idempotent (check refund log before processing)
+- ❌ Never trust frontend success callbacks
+- ❌ Never mutate the original transaction record
+- ❌ Partial refunds are not supported
+
 ---
 
 ## Credit Mapping
@@ -227,10 +399,11 @@ await putItem(CREDIT_TRANSACTIONS_TABLE, {
 For sandbox and initial production deployment, use hardcoded mapping:
 
 ```javascript
-const CREDIT_MAP = {
+const CREDIT_PACKS = {
   // Sandbox price IDs
   'pri_test_10usd': 1000,   // $10 = 1000 credits
   'pri_test_50usd': 6000,   // $50 = 6000 credits
+  'pri_test_100usd': 15000, // $100 = 15000 credits
   
   // Production price IDs (to be configured)
   // 'pri_01abc123': 1000,
@@ -242,6 +415,7 @@ const CREDIT_MAP = {
 - 1 credit = $0.01 USD
 - $10 purchase = 1000 credits
 - $50 purchase = 6000 credits (or custom rate)
+- $100 purchase = 15000 credits (or custom rate)
 
 **Note:** This mapping can be moved to SSM Parameter Store later for dynamic configuration without code changes.
 
@@ -391,21 +565,28 @@ paddle-webhook:
   environment:
     USERS_TABLE: ${self:custom.tableNames.${self:provider.stage}.users}
     CREDIT_TRANSACTIONS_TABLE: ${self:custom.tableNames.${self:provider.stage}.creditTransactions}
-    PADDLE_WEBHOOK_SECRET_SSM: /podpdf/${self:provider.stage}/paddle/webhook-secret
-    PADDLE_CREDIT_MAPPING_SSM: /podpdf/${self:provider.stage}/paddle/credit-mapping
+    # PADDLE_CREDIT_MAPPING_SSM: /podpdf/${self:provider.stage}/paddle/credit-mapping  # Optional
 ```
 
 ### IAM Permissions
 
-Add to Lambda IAM role:
-```yaml
-- Effect: Allow
-  Action:
-    - ssm:GetParameter
-    - ssm:GetParameters
-  Resource:
-    - arn:aws:ssm:${self:provider.region}:*:parameter/podpdf/${self:provider.stage}/paddle/*
-```
+**Required DynamoDB Permissions:**
+
+The `paddle-webhook` function requires the following DynamoDB permissions:
+
+**Actions:**
+- `dynamodb:GetItem` - Read credit ledger, refund log, users, credit transactions
+- `dynamodb:PutItem` - Create credit ledger entries, refund log entries, credit transactions
+- `dynamodb:UpdateItem` - Update user credit balance, credit ledger (credits_revoked)
+- `dynamodb:Query` - Query users by email (EmailIndex), credit transactions by reference_id (ReferenceIdIndex)
+
+**Resources:**
+- `UsersTable` and `UsersTable/EmailIndex` - User lookup by email
+- `CreditTransactionsTable` and `CreditTransactionsTable/ReferenceIdIndex` - Idempotency checks
+- `CreditLedgerTable` and `CreditLedgerTable/UserIdIndex` - Credit ledger operations
+- `RefundLogTable` and `RefundLogTable/TransactionIdIndex` - Refund idempotency checks
+
+**Note:** No SSM permissions needed for Paddle webhook verification (deterministic signature validation). If credit mapping is moved to SSM later, add `ssm:GetParameter` permissions then.
 
 ---
 
@@ -515,6 +696,64 @@ No migration needed for existing records. New fields are optional and will be ad
         AttributeType: S
   ```
 
+**For CreditLedgerTable (NEW):**
+```yaml
+CreditLedgerTable:
+  Type: AWS::DynamoDB::Table
+  Properties:
+    TableName: ${self:custom.tableNames.${self:provider.stage}.creditLedger}
+    BillingMode: PAY_PER_REQUEST
+    AttributeDefinitions:
+      - AttributeName: transaction_id
+        AttributeType: S
+      - AttributeName: user_id
+        AttributeType: S
+    KeySchema:
+      - AttributeName: transaction_id
+        KeyType: HASH
+    GlobalSecondaryIndexes:
+      - IndexName: UserIdIndex
+        KeySchema:
+          - AttributeName: user_id
+            KeyType: HASH
+        Projection:
+          ProjectionType: ALL
+    Tags:
+      - Key: Stage
+        Value: ${self:provider.stage}
+      - Key: Service
+        Value: podpdf
+```
+
+**For RefundLogTable (NEW):**
+```yaml
+RefundLogTable:
+  Type: AWS::DynamoDB::Table
+  Properties:
+    TableName: ${self:custom.tableNames.${self:provider.stage}.refundLog}
+    BillingMode: PAY_PER_REQUEST
+    AttributeDefinitions:
+      - AttributeName: adjustment_id
+        AttributeType: S
+      - AttributeName: transaction_id
+        AttributeType: S
+    KeySchema:
+      - AttributeName: adjustment_id
+        KeyType: HASH
+    GlobalSecondaryIndexes:
+      - IndexName: TransactionIdIndex
+        KeySchema:
+          - AttributeName: transaction_id
+            KeyType: HASH
+        Projection:
+          ProjectionType: ALL
+    Tags:
+      - Key: Stage
+        Value: ${self:provider.stage}
+      - Key: Service
+        Value: podpdf
+```
+
 ---
 
 ## Error Handling
@@ -543,6 +782,34 @@ No migration needed for existing records. New fields are optional and will be ad
 - Log info message
 - Return `200 OK`
 - Skip credit granting
+
+### Refund Processing Errors
+
+**Adjustment Not a Refund:**
+- Log info message (non-refund adjustment)
+- Return `200 OK`
+- Skip processing
+
+**Adjustment Not Approved:**
+- Log info message (pending/denied refund)
+- Return `200 OK`
+- Skip processing
+
+**Refund Already Processed:**
+- Log info message
+- Return `200 OK`
+- Skip processing (idempotency)
+
+**Credit Ledger Not Found:**
+- Log warning (transaction may not have been processed)
+- Return `200 OK`
+- Skip processing
+
+**No Unused Credits:**
+- Log info message (all credits used or already revoked)
+- Mark refund as processed
+- Return `200 OK`
+- Skip credit revocation
 
 ---
 
@@ -586,26 +853,36 @@ logger.info('Paddle webhook processed', {
 
 1. **Setup:**
    - Configure Paddle Sandbox webhook endpoint
-   - Add sandbox webhook secret to SSM
+   - Configure Paddle Sandbox webhook endpoint URL
    - Deploy to dev stage
 
 2. **Test Cases:**
-   - Valid transaction.completed event → credits granted
+   - Valid `transaction.completed` event → credits granted, ledger created
    - Duplicate webhook delivery → idempotency check prevents double crediting
    - Invalid signature → 401 response
    - User not found → logged, 200 response
    - Invalid price ID → logged, 200 response
+   - Full refund (`adjustment.created` with `action=refund`, `status=approved`) → all unused credits revoked
+   - Refund when all credits used → no credits revoked, refund marked as processed
+   - Refund when some credits used → only unused credits revoked
+   - Duplicate refund webhook → idempotency check prevents double processing
+   - Non-refund adjustment → ignored, 200 response
+   - Pending refund (`status=pending`) → ignored, 200 response
 
 3. **Verification:**
    - Check CloudWatch logs for webhook events
    - Verify credits in Users table
    - Verify transaction in CreditTransactions table
+   - Verify credit ledger created with correct `credits_granted`
    - Verify idempotency (retry webhook, no double credits)
+   - Test refund flow: verify unused credits revoked, ledger updated, refund log created
+   - Verify full refund revokes all unused credits (never revokes used credits)
+   - Verify refund idempotency (retry refund webhook, no double revocation)
 
 ### Production Testing
 
 1. **Pre-deployment:**
-   - Add production webhook secret to SSM
+   - Configure production webhook endpoint in Paddle
    - Configure production webhook endpoint in Paddle dashboard
    - Test with small transaction first
 
@@ -618,15 +895,11 @@ logger.info('Paddle webhook processed', {
 
 ## Security Considerations
 
-### Webhook Secret Management
-- Store secrets in SSM Parameter Store as `SecureString`
-- Use IAM policies to restrict access
-- Rotate secrets periodically
-- Use different secrets for sandbox and production
-
 ### Signature Validation
-- Always validate signatures using `crypto.timingSafeEqual()`
-- Never log webhook secrets
+- Paddle Billing uses deterministic signature validation (no secrets or keys)
+- Always validate signatures using the deterministic hash scheme
+- Keep raw request body (do not JSON-parse before verification)
+- Use `crypto.timingSafeEqual()` for signature comparison
 - Return generic errors to prevent information leakage
 
 ### Data Privacy
@@ -639,10 +912,10 @@ logger.info('Paddle webhook processed', {
 ## Deployment Checklist
 
 ### Pre-deployment
-- [ ] Add Paddle webhook secret to SSM Parameter Store (sandbox)
 - [ ] Configure Paddle Sandbox webhook endpoint URL
 - [ ] Test webhook signature verification locally
 - [ ] Review credit mapping configuration
+- **Note:** No secrets or public keys needed - Paddle uses deterministic signature validation
 
 ### Deployment
 - [ ] Deploy Lambda function
@@ -657,11 +930,11 @@ logger.info('Paddle webhook processed', {
 - [ ] Set up CloudWatch alarms
 
 ### Production Deployment
-- [ ] Add production webhook secret to SSM
 - [ ] Configure production webhook endpoint in Paddle
 - [ ] Update credit mapping with production price IDs
 - [ ] Test with small transaction
 - [ ] Monitor for 24-48 hours before full rollout
+- **Note:** No secrets or public keys needed - Paddle uses deterministic signature validation
 
 ---
 
@@ -670,12 +943,13 @@ logger.info('Paddle webhook processed', {
 ### Phase 2 (Optional)
 1. **Dynamic Credit Mapping:** Move credit mapping to SSM Parameter Store
 2. **Paddle Customer ID Mapping:** Store Paddle customer ID → user_id mapping for faster lookups
-3. **Refund Handling:** Handle `transaction.refunded` events
-4. **Subscription Support:** Handle subscription events (if needed later)
-5. **Webhook Retry Logic:** Implement exponential backoff for failed credit grants
-6. **Admin Dashboard:** View Paddle transactions and credit grants
+3. **Webhook Retry Logic:** Implement exponential backoff for failed credit grants
+4. **Admin Dashboard:** View Paddle transactions, credit grants, and refunds
+5. **Credit Usage Tracking:** Real-time updates to `credits_used` in credit ledger (currently requires separate process)
 
-**Note:** Email GSI is now included in Phase 1 implementation (not optional) for efficient user lookups.
+**Note:** 
+- Email GSI is now included in Phase 1 implementation (not optional) for efficient user lookups.
+- Refund handling via adjustments is now included in Phase 1 implementation (not optional).
 
 ---
 
@@ -685,16 +959,16 @@ logger.info('Paddle webhook processed', {
 
 **Description:** Paddle webhook endpoint for payment events
 
-**Authentication:** None (validated via HMAC signature)
+**Authentication:** None (validated via deterministic signature - no secret or key needed)
 
-**Note:** This endpoint should be documented in `ENDPOINTS.md` following the same format as other endpoints. It's a public endpoint (no JWT required) but validates requests via HMAC signature, similar to how `/health` validates via API key.
+**Note:** This endpoint should be documented in `ENDPOINTS.md` following the same format as other endpoints. It's a public endpoint (no JWT required) but validates requests via deterministic signature, similar to how `/health` validates via API key.
 
 **Request:**
 ```
 POST /webhooks/paddle
 Headers:
   Content-Type: application/json
-  paddle-signature: <HMAC SHA256 signature>
+  paddle-signature: ts=1234567890,v1=abc123...
 
 Body: <Paddle webhook payload>
 ```
@@ -721,7 +995,7 @@ Follows standard error format from `src/utils/errors.js`:
     "code": "UNAUTHORIZED",
     "message": "Invalid webhook signature",
     "details": {
-      "action_required": "verify_webhook_secret"
+      "action_required": "verify_signature_format"
     }
   }
 }
@@ -739,8 +1013,9 @@ Follows standard error format from `src/utils/errors.js`:
    - Verify Lambda function is deployed
 
 2. **Signature validation failing:**
-   - Verify webhook secret in SSM matches Paddle dashboard
-   - Check for trailing whitespace in secret
+   - Verify signature header format: `ts=1234567890,v1=abc123...`
+   - Ensure raw body is used (not JSON-parsed) for verification
+   - Check that timestamp and v1 values are present in header
    - Verify signature header name (`paddle-signature`)
 
 3. **Credits not granted:**
@@ -754,6 +1029,17 @@ Follows standard error format from `src/utils/errors.js`:
    - Verify idempotency check is working
    - Review transaction logs
 
+5. **Refunds not processing:**
+   - Verify adjustment has `action === 'refund'` and `status === 'approved'`
+   - Check credit ledger exists for transaction
+   - Verify unused credits available (granted - used - revoked > 0)
+   - Check refund log for duplicate processing
+
+6. **Credits revoked incorrectly:**
+   - Check that only unused credits are revoked (never revoke used credits)
+   - Verify full refund revokes all unused credits (not partial)
+   - Review credit ledger: `credits_used` should be accurate
+
 ---
 
 ## Appendix
@@ -762,11 +1048,15 @@ Follows standard error format from `src/utils/errors.js`:
 
 We currently handle:
 - `transaction.completed`: Payment completed, grant credits
+- `adjustment.created`: Adjustment created (process if refund and approved)
+- `adjustment.updated`: Adjustment updated (process if refund and approved)
 
-Future events (not implemented):
-- `transaction.refunded`: Refund processed, deduct credits
-- `subscription.created`: Subscription started
-- `subscription.canceled`: Subscription canceled
+**Event Processing Logic:**
+- `transaction.completed`: Always process (grant credits)
+- `adjustment.created` / `adjustment.updated`: Only process if `action === 'refund'` and `status === 'approved'`
+- All other events: Log and ignore (return 200)
+
+**Note:** This integration only handles one-time purchases (prepaid credits). Subscription events are not supported.
 
 ### Credit Calculation Examples
 
@@ -782,4 +1072,5 @@ Future events (not implemented):
 ## Revision History
 
 - **2025-01-15:** Initial specification created
+- **2025-01-15:** Added adjustment-based refund handling, credit ledger system, and refund-safe credit revocation
 

@@ -1,0 +1,54 @@
+[
+  {
+    "price_id": {
+      "S": "pri_01ke516mpxe3dy3m67dhjpb1hc"
+    },
+    "credits_amount": {
+      "N": "1000"
+    },
+    "active": {
+      "BOOL": true
+    },
+    "created_at": {
+      "S": "2026-01-06T18:00:00Z"
+    },
+    "updated_at": {
+      "S": "2026-01-06T18:00:00Z"
+    }
+  },
+  {
+    "price_id": {
+      "S": "pri_test_10usd"
+    },
+    "credits_amount": {
+      "N": "1000"
+    },
+    "active": {
+      "BOOL": true
+    },
+    "created_at": {
+      "S": "2026-01-06T18:00:00Z"
+    },
+    "updated_at": {
+      "S": "2026-01-06T18:00:00Z"
+    }
+  },
+  {
+    "price_id": {
+      "S": "pri_test_50usd"
+    },
+    "credits_amount": {
+      "N": "6000"
+    },
+    "active": {
+      "BOOL": true
+    },
+    "created_at": {
+      "S": "2026-01-06T18:00:00Z"
+    },
+    "updated_at": {
+      "S": "2026-01-06T18:00:00Z"
+    }
+  }
+]
+

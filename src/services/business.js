@@ -443,9 +443,10 @@ async function queueCreditDeduction(userId, jobId, amount) {
  * Automatically upgrades free plan users to paid plan on first purchase
  * @param {string} userId - User ID
  * @param {number} amount - Amount to add (must be positive)
+ * @param {object} metadata - Optional metadata (reference_id, payment_provider)
  * @returns {Promise<{success: boolean, newBalance: number, transactionId: string, upgraded: boolean, plan: object|null, error: object|null}>}
  */
-async function purchaseCredits(userId, amount) {
+async function purchaseCredits(userId, amount, metadata = null) {
   try {
     // Validate amount
     if (!amount || typeof amount !== 'number' || amount <= 0) {
@@ -541,7 +542,7 @@ async function purchaseCredits(userId, amount) {
     const { generateULID } = require('../utils/ulid');
     const transactionId = generateULID();
 
-    await putItem(CREDIT_TRANSACTIONS_TABLE, {
+    const transactionRecord = {
       transaction_id: transactionId,
       user_id: userId,
       amount: amount, // Positive for purchases
@@ -549,7 +550,20 @@ async function purchaseCredits(userId, amount) {
       status: 'completed',
       created_at: nowISO,
       processed_at: nowISO,
-    });
+    };
+
+    // Add optional metadata fields if provided
+    if (metadata?.reference_id) {
+      transactionRecord.reference_id = metadata.reference_id;
+    }
+    if (metadata?.payment_provider) {
+      transactionRecord.payment_provider = metadata.payment_provider;
+    }
+    if (metadata?.price_id) {
+      transactionRecord.price_id = metadata.price_id;
+    }
+
+    await putItem(CREDIT_TRANSACTIONS_TABLE, transactionRecord);
 
     logger.info('Credits purchased', {
       userId,

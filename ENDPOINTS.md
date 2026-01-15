@@ -2084,7 +2084,94 @@ curl -X POST https://api.podpdf.com/accounts/me/credits/purchase \
 
 ---
 
-## 14. `PUT /accounts/me/webhook` ⚠️ DEPRECATED
+## 14. `GET /accounts/me/credits/packages`
+
+**Description:**  
+Get all available credit packages from the credit mappings table. This endpoint returns all active credit packages that users can purchase, sorted by credit amount in ascending order.
+
+**Method:** `GET`  
+**Path:** `/accounts/me/credits/packages`
+
+### 14.1 Authentication
+
+- **Type:** None (public endpoint)
+- **Note:** This endpoint does not require authentication. Anyone can view available credit packages.
+
+### 14.2 HTTP Request
+
+**Method:** `GET`  
+**Path:** `/accounts/me/credits/packages`  
+**Headers:** None required
+
+### 14.3 HTTP Response
+
+**Success Response (200 OK):**
+```json
+{
+  "packages": [
+    {
+      "price_id": "pri_01ke516mpxe3dy3m67dhjpb1hc",
+      "credits_amount": 1000,
+      "active": true,
+      "created_at": "2026-01-06T18:00:00Z",
+      "updated_at": "2026-01-06T18:00:00Z"
+    },
+    {
+      "price_id": "pri_test_50usd",
+      "credits_amount": 6000,
+      "active": true,
+      "created_at": "2026-01-06T18:00:00Z",
+      "updated_at": "2026-01-06T18:00:00Z"
+    }
+  ],
+  "count": 2
+}
+```
+
+**Fields:**
+- `packages` (array): List of available credit packages, sorted by `credits_amount` in ascending order.
+  - `price_id` (string): Paddle price ID. Use this when creating a transaction with Paddle.
+  - `credits_amount` (number): Number of credits granted when this package is purchased.
+  - `active` (boolean): Whether the package is active. Only active packages are returned.
+  - `created_at` (string, optional): ISO 8601 timestamp when the package was created.
+  - `updated_at` (string, optional): ISO 8601 timestamp when the package was last updated.
+- `count` (number): Total number of active packages returned.
+
+**Error Responses:**
+- `500 Internal Server Error` – Server-side failure retrieving packages.
+
+**Notes:**
+- Only active packages (`active !== false`) are returned.
+- Packages are sorted by `credits_amount` in ascending order (smallest first).
+- This endpoint is public and does not require authentication.
+- The `price_id` can be used with Paddle to create a transaction for purchasing credits.
+
+### 14.4 Example Request
+
+```bash
+curl -X GET https://api.podpdf.com/accounts/me/credits/packages
+```
+
+### 14.5 Example Response
+
+```json
+{
+  "packages": [
+    {
+      "price_id": "pri_01ke516mpxe3dy3m67dhjpb1hc",
+      "credits_amount": 1000,
+      "active": true,
+      "created_at": "2026-01-06T18:00:00Z",
+      "updated_at": "2026-01-06T18:00:00Z"
+    }
+  ],
+  "count": 1
+}
+```
+
+---
+
+## 15. `PUT /accounts/me/webhook` ⚠️ DEPRECATED
 
 **Status:** ⚠️ **DEPRECATED** - This endpoint is deprecated and will be removed in a future version.
 
@@ -2228,7 +2315,7 @@ Authorization: Bearer <jwt_token>
 
 ---
 
-## 16. API Key Management
+## 17. API Key Management
 
 The following endpoints allow users to create, list, and revoke API keys for programmatic access to the `/quickjob` and `/longjob` endpoints.
 
@@ -2236,12 +2323,12 @@ The following endpoints allow users to create, list, and revoke API keys for pro
 
 ---
 
-### 15.1 `POST /accounts/me/api-keys`
+### 17.1 `POST /accounts/me/api-keys`
 
 **Description:**  
 Create a new API key for the authenticated user. The full API key is returned only once on creation. Store it securely as it cannot be retrieved again.
 
-#### 15.1.1 Authentication
+#### 17.1.1 Authentication
 
 - **Type:** JWT Bearer Token (Amazon Cognito) - **Required**
 - **Header:**
@@ -2255,7 +2342,7 @@ Authorization: Bearer <jwt_token>
 - User account must exist in `Users`.
 - **Note:** API keys cannot be used to authenticate to this endpoint.
 
-#### 15.1.2 HTTP Request
+#### 17.1.2 HTTP Request
 
 **Method:** `POST`  
 **Path:** `/accounts/me/api-keys`  
@@ -2271,7 +2358,7 @@ Authorization: Bearer <jwt_token>
 **Fields:**
 - `name` (string, optional): A descriptive name for the API key (e.g., "Production", "Development", "Mobile App"). If not provided, defaults to `null`.
 
-#### 15.1.3 Response
+#### 17.1.3 Response
 
 **Success Response (201 Created):**
 ```json
@@ -2303,12 +2390,12 @@ Authorization: Bearer <jwt_token>
 
 ---
 
-### 15.2 `GET /accounts/me/api-keys`
+### 17.2 `GET /accounts/me/api-keys`
 
 **Description:**  
 List all API keys for the authenticated user. The full API key is never returned in the list (only a prefix is shown for identification).
 
-#### 15.2.1 Authentication
+#### 17.2.1 Authentication
 
 - **Type:** JWT Bearer Token (Amazon Cognito) - **Required**
 - **Header:**
@@ -2322,12 +2409,12 @@ Authorization: Bearer <jwt_token>
 - User account must exist in `Users`.
 - **Note:** API keys cannot be used to authenticate to this endpoint.
 
-#### 15.2.2 HTTP Request
+#### 17.2.2 HTTP Request
 
 **Method:** `GET`  
 **Path:** `/accounts/me/api-keys`
 
-#### 15.2.3 Response
+#### 17.2.3 Response
 
 **Success Response (200 OK):**
 ```json
@@ -2374,12 +2461,12 @@ Authorization: Bearer <jwt_token>
 
 ---
 
-### 15.3 `DELETE /accounts/me/api-keys/{api_key_id}`
+### 17.3 `DELETE /accounts/me/api-keys/{api_key_id}`
 
 **Description:**  
 Revoke an API key. The key is immediately deactivated and cannot be used for authentication. This action cannot be undone, but you can create a new API key if needed.
 
-#### 15.3.1 Authentication
+#### 17.3.1 Authentication
 
 - **Type:** JWT Bearer Token (Amazon Cognito) - **Required**
 - **Header:**
@@ -2393,7 +2480,7 @@ Authorization: Bearer <jwt_token>
 - User account must exist in `Users`.
 - **Note:** API keys cannot be used to authenticate to this endpoint.
 
-#### 15.3.2 HTTP Request
+#### 17.3.2 HTTP Request
 
 **Method:** `DELETE`  
 **Path:** `/accounts/me/api-keys/{api_key_id}`
@@ -2401,7 +2488,7 @@ Authorization: Bearer <jwt_token>
 **Path Parameters:**
 - `api_key_id` (string, required): The ULID of the API key to revoke (e.g., `01ARZ3NDEKTSV4RRFFQ69G5FAV`). This is returned when creating the API key and in the list response.
 
-#### 15.3.3 Response
+#### 17.3.3 Response
 
 **Success Response (200 OK):**
 ```json
@@ -2432,7 +2519,7 @@ Authorization: Bearer <jwt_token>
 
 ---
 
-## 17. Health Check
+## 18. Health Check
 
 **Description:**  
 Health check endpoint to verify service availability and basic system status.
@@ -2540,12 +2627,265 @@ curl -X GET https://api.podpdf.com/health \
 
 ---
 
-## 18. `POST /signup`
+## 19. `POST /webhooks/paddle`
+
+**Description:**  
+Paddle webhook endpoint for payment events. Receives webhook notifications from Paddle when transactions are completed or refunds are processed. Automatically grants credits on successful payments and revokes credits on refunds.
+
+**Note:** This is a public endpoint (no JWT required) but validates requests via deterministic signature verification. Similar to how `/health` validates via API key, this endpoint validates via Paddle's signature header.
+
+### 19.1 Authentication
+
+- **Type:** None (public endpoint, validated via signature)
+- **Header:**
+```http
+paddle-signature: ts=1234567890,v1=abc123...
+```
+
+**Requirements:**
+- Signature header must be present and valid
+- Signature is verified using Paddle's deterministic signature scheme: `SHA256(timestamp + rawBody)`
+- No webhook secret or public key is required (Paddle uses deterministic signature validation)
+
+### 19.2 HTTP Request
+
+**Method:** `POST`  
+**Path:** `/webhooks/paddle`  
+**Content-Type:** `application/json`
+
+**Headers:**
+- `paddle-signature` (required): Signature header in format `ts=1234567890,v1=abc123...` where `v1` is `SHA256(timestamp + rawBody)`
+- `Content-Type`: `application/json`
+
+**Request Body:**
+Paddle webhook payload (JSON). Key fields:
+- `event_type`: Event type (e.g., `transaction.completed`, `adjustment.created`, `adjustment.updated`)
+- `event_id`: Unique event identifier
+- `occurred_at`: ISO 8601 timestamp when event occurred
+- `data`: Event data containing:
+  - For `transaction.completed`:
+    - `id`: Transaction ID
+    - `customer_id`: Customer ID
+    - `customer`: Customer object with `email`
+    - `items`: Array of items with `price_id`
+    - `totals`: Transaction totals with `total` (USD amount)
+  - For `adjustment.created` / `adjustment.updated`:
+    - `id`: Adjustment ID
+    - `transaction_id`: Original transaction ID
+    - `action`: Adjustment action (e.g., `"refund"`)
+    - `status`: Adjustment status (e.g., `"approved"`)
+    - `totals`: Adjustment totals with `total` (refund amount in USD)
+
+**Example Request:**
+```json
+{
+  "event_id": "evt_01abc123",
+  "event_type": "transaction.completed",
+  "occurred_at": "2025-01-15T10:30:00Z",
+  "data": {
+    "id": "txn_01abc123",
+    "customer_id": "ctm_01abc123",
+    "customer": {
+      "email": "user@example.com"
+    },
+    "items": [
+      {
+        "price_id": "pri_test_10usd",
+        "quantity": 1
+      }
+    ],
+    "status": "completed",
+    "totals": {
+      "total": "10.00",
+      "currency_code": "USD"
+    }
+  }
+}
+```
+
+### 19.3 HTTP Response
+
+#### 18.3.1 Success Response (200 OK)
+
+**For transaction.completed:**
+```json
+{
+  "status": "processed",
+  "event_type": "transaction.completed",
+  "transaction_id": "txn_01abc123",
+  "transaction_record_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+}
+```
+
+**For adjustment events (refunds):**
+```json
+{
+  "status": "processed",
+  "event_type": "adjustment.created",
+  "adjustment_id": "adj_01abc123",
+  "transaction_id": "txn_01abc123",
+  "credits_revoked": 700
+}
+```
+
+**Fields:**
+- `status` (string): Processing status (`"processed"`, `"error"`, or `"skipped"`)
+- `event_type` (string): Paddle event type
+- `transaction_id` (string, optional): Paddle transaction ID (for transaction.completed events)
+- `transaction_record_id` (string, optional): Internal transaction record ID (ULID)
+- `adjustment_id` (string, optional): Paddle adjustment ID (for adjustment events)
+- `credits_revoked` (number, optional): Credits revoked for refund events
+- `skipped` (boolean, optional): `true` if event was skipped (already processed)
+- `reason` (string, optional): Reason for skipping (e.g., `"already_processed"`, `"not_a_refund"`)
+
+#### 18.3.2 Error Responses
+
+**401 Unauthorized - Missing Signature:**
+```json
+{
+  "error": {
+    "code": "UNAUTHORIZED",
+    "message": "Missing or invalid authentication",
+    "details": {
+      "action_required": "verify_signature_header"
+    }
+  }
+}
+```
+
+**401 Unauthorized - Invalid Signature:**
+```json
+{
+  "error": {
+    "code": "UNAUTHORIZED",
+    "message": "Invalid webhook signature",
+    "details": {
+      "action_required": "verify_signature_format"
+    }
+  }
+}
+```
+
+**400 Bad Request - Invalid Payload:**
+```json
+{
+  "error": {
+    "code": "INVALID_PARAMETER",
+    "message": "Invalid JSON in request body",
+    "details": {
+      "parameter": "body",
+      "message": "Invalid JSON in request body"
+    }
+  }
+}
+```
+
+**Error Status Codes:**
+- `200 OK` – Webhook processed (success or non-critical error - Paddle expects 200 to prevent retries)
+- `401 Unauthorized` – Invalid or missing signature
+- `400 Bad Request` – Invalid payload format
+
+**Note:** Most processing errors return `200 OK` to prevent Paddle from retrying. Only signature validation failures return `401`, and only invalid JSON returns `400`.
+
+### 19.4 Event Processing
+
+**Supported Events:**
+- `transaction.completed`: Payment completed, grants credits to user
+- `adjustment.created`: Adjustment created (processes if refund and approved)
+- `adjustment.updated`: Adjustment updated (processes if refund and approved)
+- Other events: Logged and ignored (return 200)
+
+**Processing Logic:**
+- **Transaction Completed:**
+  1. Validates signature
+  2. Extracts transaction ID, customer email, and price ID
+  3. Checks idempotency (prevents double crediting)
+  4. Looks up user by email
+  5. Grants credits based on price ID mapping
+  6. Creates credit ledger entry
+  7. Logs transaction to CreditTransactions table
+
+- **Adjustment Events (Refunds):**
+  1. Validates signature
+  2. Filters for refund adjustments only (`action === 'refund'` and `status === 'approved'`)
+  3. Checks idempotency (prevents double processing)
+  4. Retrieves credit ledger for original transaction
+  5. Calculates unused credits (granted - used - revoked)
+  6. Revokes all unused credits (full refund only)
+  7. Updates user credit balance and ledger
+  8. Logs refund transaction
+
+### 19.5 Example Request
+
+```bash
+curl -X POST https://api.podpdf.com/webhooks/paddle \
+  -H "Content-Type: application/json" \
+  -H "paddle-signature: ts=1234567890,v1=abc123..." \
+  -d '{
+    "event_id": "evt_01abc123",
+    "event_type": "transaction.completed",
+    "occurred_at": "2025-01-15T10:30:00Z",
+    "data": {
+      "id": "txn_01abc123",
+      "customer": {
+        "email": "user@example.com"
+      },
+      "items": [
+        {
+          "price_id": "pri_test_10usd",
+          "quantity": 1
+        }
+      ]
+    }
+  }'
+```
+
+### 19.6 Example Response
+
+**Success:**
+```json
+{
+  "status": "processed",
+  "event_type": "transaction.completed",
+  "transaction_id": "txn_01abc123",
+  "transaction_record_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+}
+```
+
+**Skipped (Already Processed):**
+```json
+{
+  "status": "processed",
+  "event_type": "transaction.completed",
+  "transaction_id": "txn_01abc123",
+  "skipped": true,
+  "reason": "already_processed"
+}
+```
+
+### 19.7 Usage Notes
+
+- **Signature Verification:** Paddle uses deterministic signature validation (no secret or public key needed). The signature is computed as `SHA256(timestamp + rawBody)` and compared using timing-safe comparison.
+- **Idempotency:** Both transaction and refund processing are idempotent. Duplicate webhook deliveries are safely ignored.
+- **Credit Granting:** Credits are granted automatically on `transaction.completed` events. The credit amount is determined by the price ID mapping (initially hardcoded, can be moved to SSM later).
+- **Refund Processing:** Only approved refund adjustments trigger credit revocation. The system revokes all unused credits (full refunds only - partial refunds are not supported).
+- **User Lookup:** Users are looked up by email using the `EmailIndex` GSI on the Users table.
+- **Error Handling:** Most errors return `200 OK` to prevent Paddle retries. Only signature validation failures return `401`.
+- **Webhook Configuration:** Configure this endpoint URL in your Paddle dashboard (sandbox or production) to receive webhook events.
+
+**Status Codes:**
+- `200 OK` – Webhook processed (success or non-critical error)
+- `401 Unauthorized` – Invalid or missing signature
+- `400 Bad Request` – Invalid payload format
+
+---
+
+## 19. `POST /signup`
 
 **Description:**  
 Create a new user account in Cognito. After signup, the user will receive a verification code via email. Once they confirm their email with the code, the **Post Confirmation Lambda trigger** will automatically create the DynamoDB account record. No additional API call is needed to create the account record.
 
-### 17.1 Authentication
+### 19.1 Authentication
 
 - **Type:** None (public endpoint)
 - **Note:** This endpoint does not require authentication. It is used to create new user accounts.
@@ -2706,12 +3046,12 @@ curl -X POST https://api.podpdf.com/signup \
 **Description:**  
 Confirm user email with the verification code received via email. After successful confirmation, the **Post Confirmation Lambda trigger** will automatically create the DynamoDB account record. Once confirmed, the user can sign in using the `/signin` endpoint.
 
-### 18.1 Authentication
+### 19.1 Authentication
 
 - **Type:** None (public endpoint)
 - **Note:** This endpoint does not require authentication. It is used to confirm email addresses after signup.
 
-### 18.2 HTTP Request
+### 19.2 HTTP Request
 
 **Method:** `POST`  
 **Path:** `/confirm-signup`  
@@ -2730,7 +3070,7 @@ Confirm user email with the verification code received via email. After successf
 - `email` (string, required) - User's email address (same email used in signup)
 - `confirmationCode` (string, required) - 6-digit verification code received via email
 
-### 18.3 HTTP Response
+### 19.3 HTTP Response
 
 #### 18.3.1 Success Response (200 OK)
 
