@@ -6,6 +6,7 @@
  */
 
 const logger = require('../utils/logger');
+const { wrapHandler } = require('../utils/sentry');
 const { extractUserInfo } = require('../middleware/apiKeyAuth');
 const { validateRequestBody } = require('../services/validation');
 const {
@@ -453,5 +454,5 @@ async function handler(event) {
   }
 }
 
-module.exports = { handler };
+module.exports = { handler: wrapHandler(handler) };
 

@@ -8,6 +8,7 @@
  */
 
 const logger = require('../utils/logger');
+const { wrapHandler } = require('../utils/sentry');
 const { getUserAccount } = require('../services/business');
 const { generateULID } = require('../utils/ulid');
 const { putItem } = require('../services/dynamodb');
@@ -105,5 +106,5 @@ async function handler(event) {
   }
 }
 
-module.exports = { handler };
+module.exports = { handler: wrapHandler(handler) };
 

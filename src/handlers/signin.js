@@ -4,6 +4,7 @@
  */
 
 const logger = require('../utils/logger');
+const { wrapHandler } = require('../utils/sentry');
 const { BadRequest, Unauthorized, InternalServerError } = require('../utils/errors');
 const {
   CognitoIdentityProviderClient,
@@ -119,5 +120,5 @@ async function handler(event) {
   }
 }
 
-module.exports = { handler };
+module.exports = { handler: wrapHandler(handler) };
 

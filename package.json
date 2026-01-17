@@ -39,6 +39,7 @@
     "@aws-sdk/lib-dynamodb": "^3.490.0",
     "@aws-sdk/s3-request-presigner": "^3.490.0",
     "@paddle/paddle-node-sdk": "^1.0.0",
+    "@sentry/serverless": "^7.120.4",
     "@sparticuz/chromium": "^119.0.2",
     "jsonwebtoken": "^9.0.2",
     "jwks-rsa": "^3.1.0",

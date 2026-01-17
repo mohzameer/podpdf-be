@@ -148,6 +148,7 @@ provider:
           Resource:
             - arn:aws:ssm:${self:provider.region}:*:parameter/podpdf/${self:provider.stage}/health/api-key
             - arn:aws:ssm:${self:provider.region}:*:parameter/podpdf/${self:provider.stage}/paddle/webhook-secret
+            - arn:aws:ssm:${self:provider.region}:*:parameter/podpdf/${self:provider.stage}/sentry/dsn
 
 functions:
   quickjob:
@@ -156,6 +157,8 @@ functions:
     memorySize: 3008
     # Slightly below API Gateway 30s limit to avoid timeout race
     timeout: 28
+    environment:
+      SENTRY_DSN: ${self:custom.stages.${self:provider.stage}.environment.SENTRY_DSN, ''}
     events:
       - httpApi:
           path: /quickjob
@@ -167,6 +170,8 @@ functions:
     memorySize: 1024
     # Slightly below API Gateway 30s limit to avoid timeout race
     timeout: 28
+    environment:
+      SENTRY_DSN: ${self:custom.stages.${self:provider.stage}.environment.SENTRY_DSN, ''}
     events:
       - httpApi:
           path: /longjob
@@ -183,6 +188,7 @@ functions:
           arn: !GetAtt LongJobQueue.Arn
           batchSize: 1
     environment:
+      SENTRY_DSN: ${self:custom.stages.${self:provider.stage}.environment.SENTRY_DSN, ''}
       WEBHOOKS_TABLE: ${self:custom.tableNames.${self:provider.stage}.webhooks}
       WEBHOOK_HISTORY_TABLE: ${self:custom.tableNames.${self:provider.stage}.webhookHistory}
       DEFAULT_WEBHOOK_MAX_RETRIES: 3
@@ -198,11 +204,14 @@ functions:
           arn: !GetAtt CreditDeductionQueue.Arn
           batchSize: 1
     environment:
+      SENTRY_DSN: ${self:custom.stages.${self:provider.stage}.environment.SENTRY_DSN, ''}
       USERS_TABLE: ${self:custom.tableNames.${self:provider.stage}.users}
       CREDIT_TRANSACTIONS_TABLE: ${self:custom.tableNames.${self:provider.stage}.creditTransactions}
   
   jobs:
     handler: src/handlers/jobs.handler
+    environment:
+      SENTRY_DSN: ${self:custom.stages.${self:provider.stage}.environment.SENTRY_DSN, ''}
     events:
       - httpApi:
           path: /jobs
@@ -229,6 +238,7 @@ functions:
           method: get
           authorizer: cognitoAuthorizer
     environment:
+      SENTRY_DSN: ${self:custom.stages.${self:provider.stage}.environment.SENTRY_DSN, ''}
       PLANS_TABLE: ${self:custom.tableNames.${self:provider.stage}.plans}
   
   api-keys:
@@ -247,6 +257,7 @@ functions:
           method: delete
           authorizer: cognitoAuthorizer
     environment:
+      SENTRY_DSN: ${self:custom.stages.${self:provider.stage}.environment.SENTRY_DSN, ''}
       API_KEYS_TABLE: ${self:custom.tableNames.${self:provider.stage}.apiKeys}
   
   webhook-manager:
@@ -277,6 +288,7 @@ functions:
           method: get
           authorizer: cognitoAuthorizer
     environment:
+      SENTRY_DSN: ${self:custom.stages.${self:provider.stage}.environment.SENTRY_DSN, ''}
       WEBHOOKS_TABLE: ${self:custom.tableNames.${self:provider.stage}.webhooks}
       WEBHOOK_HISTORY_TABLE: ${self:custom.tableNames.${self:provider.stage}.webhookHistory}
       PLANS_TABLE: ${self:custom.tableNames.${self:provider.stage}.plans}
@@ -285,6 +297,7 @@ functions:
   accounts:
     handler: src/handlers/accounts.handler
     environment:
+      SENTRY_DSN: ${self:custom.stages.${self:provider.stage}.environment.SENTRY_DSN, ''}
       CREDIT_MAPPINGS_TABLE: ${self:custom.tableNames.${self:provider.stage}.creditMappings}
     events:
       - httpApi:
@@ -324,10 +337,13 @@ functions:
     handler: src/handlers/api-key-authorizer.handler
     timeout: 5
     environment:
+      SENTRY_DSN: ${self:custom.stages.${self:provider.stage}.environment.SENTRY_DSN, ''}
       HEALTH_API_KEY_SSM_PARAMETER: /podpdf/${self:provider.stage}/health/api-key
   
   health:
     handler: src/handlers/health.handler
+    environment:
+      SENTRY_DSN: ${self:custom.stages.${self:provider.stage}.environment.SENTRY_DSN, ''}
     events:
       - httpApi:
           path: /health
@@ -338,24 +354,28 @@ functions:
     handler: src/handlers/signup.handler
     events: ${self:custom.stages.${self:provider.stage}.signupEvents}
     environment:
+      SENTRY_DSN: ${self:custom.stages.${self:provider.stage}.environment.SENTRY_DSN, ''}
       COGNITO_USER_POOL_CLIENT_ID: !Ref CognitoUserPoolClient
   
   confirm-signup:
     handler: src/handlers/confirm-signup.handler
     events: ${self:custom.stages.${self:provider.stage}.confirmSignupEvents}
     environment:
+      SENTRY_DSN: ${self:custom.stages.${self:provider.stage}.environment.SENTRY_DSN, ''}
       COGNITO_USER_POOL_CLIENT_ID: !Ref CognitoUserPoolClient
   
   signin:
     handler: src/handlers/signin.handler
     events: ${self:custom.stages.${self:provider.stage}.signinEvents}
     environment:
+      SENTRY_DSN: ${self:custom.stages.${self:provider.stage}.environment.SENTRY_DSN, ''}
       COGNITO_USER_POOL_CLIENT_ID: !Ref CognitoUserPoolClient
   
   refresh:
     handler: src/handlers/refresh.handler
     events: ${self:custom.stages.${self:provider.stage}.refreshEvents}
     environment:
+      SENTRY_DSN: ${self:custom.stages.${self:provider.stage}.environment.SENTRY_DSN, ''}
       COGNITO_USER_POOL_CLIENT_ID: !Ref CognitoUserPoolClient
   
   cognito-post-confirmation:
@@ -365,6 +385,7 @@ functions:
           pool: CognitoUserPool
           trigger: PostConfirmation
     environment:
+      SENTRY_DSN: ${self:custom.stages.${self:provider.stage}.environment.SENTRY_DSN, ''}
       USERS_TABLE: ${self:custom.tableNames.${self:provider.stage}.users}
   
   paddle-webhook:
@@ -377,6 +398,7 @@ functions:
           method: post
           authorizer: null  # Public endpoint (validated via signature)
     environment:
+      SENTRY_DSN: ${self:custom.stages.${self:provider.stage}.environment.SENTRY_DSN, ''}
       USERS_TABLE: ${self:custom.tableNames.${self:provider.stage}.users}
       CREDIT_TRANSACTIONS_TABLE: ${self:custom.tableNames.${self:provider.stage}.creditTransactions}
       CREDIT_LEDGER_TABLE: ${self:custom.tableNames.${self:provider.stage}.creditLedger}
@@ -440,6 +462,8 @@ custom:
       maxPages: 100
       maxQuickJobPages: 25
       maxLongJobPages: 100
+      environment:
+        SENTRY_DSN: ${ssm:/podpdf/prod/sentry/dsn}
       signupEvents:
         - httpApi:
             path: /signup

@@ -4,6 +4,7 @@
  */
 
 const logger = require('../utils/logger');
+const { wrapHandler } = require('../utils/sentry');
 const { extractUserSub } = require('../middleware/auth');
 const { Unauthorized, Forbidden, NotFound, InternalServerError, BadRequest } = require('../utils/errors');
 const {
@@ -293,5 +294,5 @@ async function getWebhookHistoryHandler(event, userSub, webhookId) {
   }
 }
 
-module.exports = { handler };
+module.exports = { handler: wrapHandler(handler) };
 

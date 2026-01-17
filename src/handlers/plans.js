@@ -5,6 +5,7 @@
  */
 
 const logger = require('../utils/logger');
+const { wrapHandler } = require('../utils/sentry');
 const { NotFound, InternalServerError } = require('../utils/errors');
 const { getPlan } = require('../services/business');
 const { scan } = require('../services/dynamodb');
@@ -142,5 +143,5 @@ async function listPlans(event) {
   }
 }
 
-module.exports = { handler };
+module.exports = { handler: wrapHandler(handler) };
 

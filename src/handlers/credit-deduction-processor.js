@@ -5,6 +5,7 @@
  */
 
 const logger = require('../utils/logger');
+const { wrapHandler } = require('../utils/sentry');
 const { getItem, putItem, updateItem, queryItems } = require('../services/dynamodb');
 
 const USERS_TABLE = process.env.USERS_TABLE;
@@ -287,5 +288,5 @@ async function handler(event) {
   };
 }
 
-module.exports = { handler };
+module.exports = { handler: wrapHandler(handler) };
 

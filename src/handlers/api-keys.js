@@ -8,6 +8,7 @@
  */
 
 const logger = require('../utils/logger');
+const { wrapHandler } = require('../utils/sentry');
 const { extractUserSub } = require('../middleware/auth');
 const { getUserAccount } = require('../services/business');
 const { getItem, putItem, queryItems, updateItem } = require('../services/dynamodb');
@@ -262,5 +263,5 @@ async function revokeApiKey(event, userId, apiKeyId) {
   }
 }
 
-module.exports = { handler };
+module.exports = { handler: wrapHandler(handler) };
 

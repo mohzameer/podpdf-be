@@ -4,6 +4,7 @@
  */
 
 const logger = require('../utils/logger');
+const { wrapHandler } = require('../utils/sentry');
 const { Unauthorized, BadRequest, InternalServerError } = require('../utils/errors');
 const {
   verifyWebhookSignature,
@@ -402,5 +403,5 @@ async function handleAdjustmentEvent(payload) {
   }
 }
 
-module.exports = { handler };
+module.exports = { handler: wrapHandler(handler) };
 

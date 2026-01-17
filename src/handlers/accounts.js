@@ -6,6 +6,7 @@
  */
 
 const logger = require('../utils/logger');
+const { wrapHandler } = require('../utils/sentry');
 const { Unauthorized, Forbidden, InternalServerError, BadRequest } = require('../utils/errors');
 const { extractUserSub } = require('../middleware/auth');
 const { getUserAccount, validateUserAndPlan, purchaseCredits: purchaseCreditsService } = require('../services/business');
@@ -624,5 +625,5 @@ async function getCreditPackages(event) {
   }
 }
 
-module.exports = { handler };
+module.exports = { handler: wrapHandler(handler) };
 

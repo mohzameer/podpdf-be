@@ -4,6 +4,7 @@
  */
 
 const logger = require('../utils/logger');
+const { wrapHandler } = require('../utils/sentry');
 const { extractUserSub } = require('../middleware/auth');
 const { getJobRecord, listJobsByUserId } = require('../services/jobTracking');
 const { Forbidden, InternalServerError, BadRequest } = require('../utils/errors');
@@ -257,5 +258,5 @@ async function handleGetJobWebhookHistory(jobId, userId, userSub, queryParams) {
   }
 }
 
-module.exports = { handler };
+module.exports = { handler: wrapHandler(handler) };
 

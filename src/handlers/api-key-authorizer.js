@@ -4,6 +4,7 @@
  */
 
 const logger = require('../utils/logger');
+const { wrapHandler } = require('../utils/sentry');
 const { SSMClient, GetParameterCommand } = require('@aws-sdk/client-ssm');
 
 // AWS_REGION is automatically provided by Lambda runtime
@@ -103,5 +104,5 @@ async function handler(event) {
   }
 }
 
-module.exports = { handler };
+module.exports = { handler: wrapHandler(handler) };
 

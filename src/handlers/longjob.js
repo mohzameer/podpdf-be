@@ -8,6 +8,7 @@
 const { SQSClient, SendMessageCommand } = require('@aws-sdk/client-sqs');
 const logger = require('../utils/logger');
 const { extractUserInfo } = require('../middleware/apiKeyAuth');
+const { wrapHandler } = require('../utils/sentry');
 const { validateRequestBody, validateWebhookUrl } = require('../services/validation');
 const {
   validateUserAndPlan,
@@ -314,5 +315,5 @@ async function handler(event) {
   }
 }
 
-module.exports = { handler };
+module.exports = { handler: wrapHandler(handler) };
 
